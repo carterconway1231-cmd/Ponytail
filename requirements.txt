@@ -1,0 +1,5 @@
+robin_stocks
+pandas
+numpy
+ta
+python-dotenv
