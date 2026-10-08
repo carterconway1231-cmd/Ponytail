@@ -949,3 +949,26 @@ def test_alerts_fire_on_trades_and_never_break_trading(session, monkeypatch):
     assert any("OPENED SPY 780.0 call" in m for m in sent)
     monkeypatch.undo()
     assert al.send("http://127.0.0.1:9/unreachable", "x", timeout=0.2) is False   # failure is swallowed
+
+
+# ---- backtest ------------------------------------------------------------------------
+
+from ponytail import backtest as bt  # noqa: E402
+
+
+def test_backtest_runs_walk_forward_on_real_bars(cfg):
+    bars = {"SPY": {"day": real_bars("day"), "hour": real_bars("hour")}, "VIX": {"day": vix_bars()}}
+    loose = dataclasses.replace(cfg, min_confluence=2, signal_threshold=0.1, min_contract_ev=-9, max_premium_per_trade=1e4)
+    out = bt.run(loose, bars, 3000, ablate=True)
+    assert out["symbols"] == ["SPY"] and out["funnel"]["evaluated"] > 0
+    assert sum(v for k, v in out["funnel"].items() if k != "evaluated") == out["funnel"]["evaluated"]
+    for t in out["trades"]:
+        assert t["opened"] <= t["closed_at"][:10] and t["mode"] == "backtest" and len(t["path"]) >= 1
+    assert {r["factor"] for r in out["ablation"]} == set(fx.ALL_FACTORS)
+
+
+def test_backtest_offers_narrow_spreads_for_small_accounts(cfg):
+    names = [n for n, _ in bt._candidates(cfg, 780.0, 0.15, 0.12, "call", "debit_spread")]
+    assert {"spread_1", "spread_2"} <= set(names)
+    legs = dict(bt._candidates(cfg, 780.0, 0.15, 0.12, "put", "debit_spread"))["spread_1"]
+    assert legs == [(780, "put", 1), (779, "put", -1)]       # put spread: short strike below
