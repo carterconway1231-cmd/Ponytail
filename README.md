@@ -287,6 +287,41 @@ The study answers two questions honestly before you trust or loosen anything.
 
 The ablation (`--ablate`) and exit tuner work, but with only a few dozen trades their results aren't meaningful yet.
 
+## Bandz indicator study
+
+`ponytail/bandz.py` ports the tradable parts of the "Bandz All-in-One" TradingView indicator to Python, using its 5-minute-chart preset:
+
+- **CISD + STDV projections.** 1H liquidity, 5m confirmation, 4H competition window, the same thresholds and timers as the Pine source.
+- **SMT divergence.** SPY vs QQQ (the Pine compares against ES futures) on 15m and 1H periods.
+- **First 5m FVG of each 4H period.** At least 55 ticks, with the body volume-imbalance edges.
+
+Signals use only data available at the time: the Pine processes the previous bar, so a signal on bar *p* is known at the close of *p+1*, and every trade enters at the next bar's open.
+
+```bash
+python -m ponytail.bandz_study DIR   # DIR holds SPY_5minute.json and QQQ_5minute.json
+```
+
+**How each signal is tested.** Each signal is traded with a bracket: STDV targets at −1/−2/−2.5/−4 with the stop past the sweep extreme, or 2R for SMT and FVG. Results are net of $0.02/share and compared against a **matched null**. The null uses the identical bracket, the same direction and the same time of day, entered at random on other days.
+
+**Results** (Robinhood 5-minute bars, Feb 23 – Oct 8 2026, 159 days; split Jun 16):
+
+| Signal | Trades | Edge vs null (R/trade, net) | Verdict |
+|---|---|---|---|
+| CISD → −2 objective, SPY | 154 | +0.03 (t 0.3); halves −0.11 / +0.14 | none |
+| CISD → −2 objective, QQQ | 175 | −0.10 (t −1.6); negative in both halves | worse than random |
+| CISD → −1 / −2.5 / −4 | 126–194 | −0.12 to +0.03 | none |
+| SMT 15m, 2R bracket | ~1,680 | −0.05 / −0.01 | none |
+| SMT 1H, 2R bracket | ~540 | −0.02 / +0.05 | none |
+| SMT 1H, next-hour return | 553 | +2–3 bp (t ≈ 2.1 per signal, **1.5 by day**) | not significant |
+| First 4H FVG, 2R bracket | 191 / 218 | +0.05 (SPY) / +0.13 (QQQ, t 1.8) | not significant |
+
+**Reading these results:**
+
+- **About 30 variants were tested,** so one or two |t| ≈ 2 results are expected from chance alone.
+- **Bearish 1H SMT** looked strong from mid-June to October (t 3–4) but showed nothing from late February to mid-June (t ≈ 0). That's the same "worked in one half only" pattern the directional study found.
+- **Hit rates track the bracket geometry.** For example, the −2 target hits about 30% of the time when it sits 2–3× the stop distance away, which is what a random walk would give.
+- **Conclusion:** none of these signals is wired into the agent. If you want to keep tracking the bearish SMT, it could be shadow-logged live and re-tested once more data accrues.
+
 ## Setup
 
 1. **Robinhood account.** Give the agent-enabled ("Agentic") account options approval: Level 2 for long calls/puts, Level 3 for spreads. Then fund it. Until then, run in paper mode.

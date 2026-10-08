@@ -1245,3 +1245,50 @@ def test_drive_refuses_live(cfg, monkeypatch):
     monkeypatch.setattr(drive.Config, "from_env", classmethod(lambda c: dataclasses.replace(cfg, live_trading=True)))
     with pytest.raises(SystemExit, match="paper-only"):
         drive.main(["start"])
+
+
+# ---- Bandz (TradingView indicator) port ------------------------------------------
+
+from ponytail import bandz as bz  # noqa: E402
+
+
+def five_min(rows, day="2026-03-02"):
+    """Bars from (open, high, low, close) tuples starting 9:30 ET."""
+    start = datetime.fromisoformat(f"{day}T14:30:00+00:00")
+    return [{"begins_at": (start + timedelta(minutes=5 * i)).isoformat().replace("+00:00", "Z"),
+             "open_price": o, "high_price": h, "low_price": l, "close_price": c} for i, (o, h, l, c) in enumerate(rows)]
+
+
+def test_bandz_cisd_regression_on_real_bars():
+    s = bz.Series(json.load(open(os.path.join(FIX, "spy_5m_2d.json"))))
+    ev = bz.detect_cisd(s)
+    first = ev[0]
+    # Sweep of the unswept 1H low 681.59 to 680.59, two-candle delivery with CISD at 682.04,
+    # reclaim, then a close above the 682.47 swing at 13:05 ET on Feb 23.
+    assert (first["dir"], first["a0"], first["a1"], first["cisd"], first["ref"]) == (1, 682.47, 680.59, 682.04, 681.59)
+    assert s.t[first["p"]].astimezone(bz.ET).strftime("%H:%M") == "13:05" and first["signal_bar"] == first["p"] + 1
+    assert first["sweep_bar"] < first["p"]
+    # STDV levels: -2 sits two legs above the swing for a bullish set.
+    assert bz.level(first["a0"], first["a1"], -2.0) == pytest.approx(682.47 + 2 * (682.47 - 680.59))
+
+
+def test_bandz_bracket_is_conservative_and_same_day():
+    s = bz.Series(five_min([(100, 100.2, 99.9, 100.1), (100.1, 101.5, 98.0, 100.0), (100, 100.1, 99.9, 100)]))
+    # Bar 1 touches both the 101 target and the 99 stop: counted as a stop.
+    assert bz.bracket(s, 1, 1, 99.0, 101.0) == (-1.0, "stop")
+    r, how = bz.bracket(s, 2, 1, 99.0, 103.0)
+    assert how == "eod" and r == pytest.approx(0.0)
+
+
+def test_bandz_first_fvg_and_smt():
+    rows = [(100, 100.1, 99.9, 100.0), (100.0, 101.5, 100.0, 101.4), (101.4, 102.0, 101.0, 101.9),
+            (101.9, 103.0, 101.8, 102.9)]
+    s = bz.Series(five_min(rows))
+    fvg = bz.detect_first_fvg(s, min_ticks=50)
+    # Wick gap is 100.1-101.0; touching bodies (volume imbalances) widen it to the bodies, as in the Pine.
+    assert (fvg[0]["dir"], fvg[0]["bar"], fvg[0]["bottom"], fvg[0]["top"]) == (1, 2, 100.0, 101.4)
+    # SMT: in the second 15m period A trades above its prior-period high, B does not.
+    a = bz.Series(five_min([(100, 101, 99, 100)] * 3 + [(100, 101.5, 99.5, 100)] * 3))
+    b = bz.Series(five_min([(50, 51, 49, 50)] * 3 + [(50, 50.8, 49.5, 50)] * 3))
+    ev = bz.detect_smt(a, b, 15)
+    assert [(e["dir"], e["bar"], e["anchor"]) for e in ev] == [(-1, 3, 101.5)]
