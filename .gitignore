@@ -6,3 +6,5 @@ bot_state.json
 agent_state.json
 .state-*
 .pytest_cache/
+.ponytail_run/
+!paper/agent_state.json

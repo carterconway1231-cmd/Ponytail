@@ -1209,3 +1209,39 @@ def test_backtest_cli_runs_the_configured_strategy(pcfg):
     out = bt.run(pcfg, {"SPY": {"day": real_bars("day")}, "VIX": {"day": vix_bars()}}, 25000)
     assert out["strategy"] == "premium" and out["symbols"] == ["SPY"]
     assert out["params"]["structure"] == "put" and out["params"]["dte"] == 45
+
+
+def test_drive_runs_a_paper_cycle_across_processes(pcfg, tmp_path, monkeypatch, capsys):
+    from ponytail import drive
+    monkeypatch.setattr(drive, "CACHE", str(tmp_path / "run" / "cycle.pkl"))
+    monkeypatch.setattr(drive, "RUN_DIR", str(tmp_path / "run"))
+    monkeypatch.setattr(drive.Config, "from_env", classmethod(lambda c: pcfg))
+    monkeypatch.setattr(drive, "TradingSession", lambda cfg: TradingSession(cfg, today=TODAY, clock=MARKET_HOURS))
+
+    def step(*argv):
+        drive.main(list(argv))
+        return json.loads(capsys.readouterr().out)
+
+    assert step("start")["strategy"] == "premium"
+    for tool, payload in [("get_equity_historicals", {"data": {"results": [
+            {"symbol": "SPY", "interval": "day", "bars": real_bars("day")}]}}),
+            ("get_option_instruments", {"data": {"instruments": [put_inst(SHORT, 740), put_inst(LONG, 733),
+                                                                 put_inst(ATM, 780)]}}),
+            ("get_option_quotes", {"data": {"results": [put_quote(SHORT, 5.00, 5.12, -0.20, 0.17),
+                                                        put_quote(LONG, 3.60, 3.68, -0.16, 0.18),
+                                                        put_quote(ATM, 14.0, 14.2, -0.50, 0.15)]}})]:
+        path = tmp_path / f"{tool}.json"
+        path.write_text(json.dumps(payload))
+        step("ingest", tool, str(path))
+    plan = step("call", "propose_credit_spread", json.dumps({"short_option_id": SHORT, "long_option_id": LONG,
+                                                            "quantity": 4, "limit_credit": 1.38, "thesis": "t"}))
+    assert plan["approved"], plan
+    assert "PAPER MODE" in step("order", json.dumps(plan["order"]))["decision"]
+    assert SHORT in json.load(open(pcfg.state_path))["positions"]
+
+
+def test_drive_refuses_live(cfg, monkeypatch):
+    from ponytail import drive
+    monkeypatch.setattr(drive.Config, "from_env", classmethod(lambda c: dataclasses.replace(cfg, live_trading=True)))
+    with pytest.raises(SystemExit, match="paper-only"):
+        drive.main(["start"])
