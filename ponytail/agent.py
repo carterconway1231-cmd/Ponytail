@@ -18,7 +18,7 @@ from claude_agent_sdk import (
     create_sdk_mcp_server, query, tool,
 )
 
-from . import risk
+from . import protect, risk
 from .market import MarketCache, decode_tool_response
 from .signals import raw_votes, weighted_decision
 from .state import State, now_iso
@@ -64,6 +64,7 @@ class TradingSession:
         self.signals = {}  # symbol -> {votes, score, decision, rsi}
         self.plans = {}    # option_id -> approved open plan
         self.events = []   # audit trail of guardrail decisions this run
+        self.cancelable = set()  # order ids review_positions cleared for cancellation
 
     @property
     def mode(self):
@@ -105,13 +106,18 @@ class TradingSession:
                 "premium_at_risk": round(cost, 2), "next": "review_option_order, then place_option_order with these exact values"}
 
     def review_positions(self):
+        events = protect.reconcile(self.cfg, self.state, self.market, self.today)
+        events += protect.simulate_paper_stops(self.state, self.market, self.today)
+        for e in events:
+            self.audit(e["kind"], **{k: v for k, v in e.items() if k != "kind"})
         rows = risk.review_exits(self.cfg, self.state, self.market, self.signals, self.today)
-        for row in rows:
-            if row["action"] == "DROP":
-                self.state.drop_position(row["option_id"], row["reason"])
-                self.audit("position_dropped", **row)
+        # Cancelling a live stop is only allowed to exit or to ratchet it higher.
+        self.cancelable = {r["cancel_stop_first"] for r in rows if r.get("cancel_stop_first")}
+        self.cancelable |= {p["open_order_id"] for p in self.state.positions.values()
+                            if p["mode"] == "live" and p.get("open_order_id") and not p.get("filled")}
         self.state.save()
-        return {"mode": self.mode, "positions": rows}
+        return {"mode": self.mode, "broker_events": events, "positions": rows,
+                "circuit_breakers": risk.circuit_breakers(self.cfg, self.state, self.market, self.today)}
 
     def portfolio_status(self):
         day = self.today.isoformat()
@@ -122,10 +128,13 @@ class TradingSession:
             "open_positions": self.state.positions, "open_premium": round(self.state.open_premium(), 2),
             "realized_pnl_today": round(self.state.realized_pnl_on(day), 2),
             "realized_pnl_all_time": round(sum(t["pnl"] for t in log_), 2), "closed_trades": len(log_),
+            "circuit_breakers": risk.circuit_breakers(self.cfg, self.state, self.market, self.today),
             "limits": {k: getattr(self.cfg, k) for k in (
                 "max_premium_per_trade", "max_total_premium", "max_open_positions", "max_daily_loss",
+                "max_weekly_loss", "max_consecutive_losses", "loss_cooldown_days",
                 "min_dte", "max_dte", "min_abs_delta", "max_abs_delta", "max_spread_pct",
-                "min_open_interest", "avoid_earnings", "take_profit_pct", "stop_loss_pct", "exit_dte")},
+                "min_open_interest", "avoid_earnings", "take_profit_pct", "stop_loss_pct",
+                "trail_activate_pct", "trail_pct", "stop_order_type", "exit_dte")},
         }
 
     # ---- hooks --------------------------------------------------------
@@ -147,17 +156,36 @@ class TradingSession:
             # account may not have; the guardrail plan check already ran.
             return _deny("PAPER MODE: broker review skipped. Proceed to place_option_order.")
 
+        if name == RH + "cancel_option_order":
+            return self._gate_cancel(args.get("order_id"))
+
         if name == RH + "place_option_order":
-            ok, reason, order = risk.check_order(self.cfg, self.state, self.plans, args)
+            ok, reason, order = risk.check_order(self.cfg, self.state, self.market, self.plans, args, self.today)
             if not ok:
                 self.audit("order_denied", reason=reason, order=args)
                 return _deny(f"Guardrail: {reason}")
             if not self.cfg.live_trading:
-                self._record_fill(order, mode="paper")
-                return _deny(f"PAPER MODE: order not sent to Robinhood. Simulated fill recorded: "
-                             f"{order['effect']} {order['quantity']:g} x {order['option_id']} @ {order['price']}. "
-                             f"Treat it as filled and continue.")
+                order_id = f"paper-{len(self.events)}-{order['option_id'][:8]}"
+                self._record(order, mode="paper", order_id=order_id)
+                what = (f"protective {order['type']} at {order['stop_price']}" if order["effect"] == "stop"
+                        else f"fill: {order['effect']} {order['quantity']:g} @ {order['price']}")
+                return _deny(f"PAPER MODE: order not sent to Robinhood. Simulated {what} recorded for "
+                             f"{order['option_id']} (order_id {order_id}). Treat it as accepted and continue.")
             self.audit("order_allowed", order=order)
+        return {}
+
+    def _gate_cancel(self, order_id):
+        stops = {p["stop"]["order_id"]: oid for oid, p in self.state.positions.items() if p.get("stop")}
+        if order_id not in self.cancelable:
+            if order_id in stops:
+                return _deny("Guardrail: protective stops may only be cancelled to close the position or to raise "
+                             "the stop, as listed by review_positions")
+            return _deny("Guardrail: only the agent's own stale opening orders or listed stops may be cancelled")
+        if not self.cfg.live_trading and order_id in stops:
+            self.state.positions[stops[order_id]]["stop"] = None
+            self.state.save()
+            self.audit("stop_cancelled", mode="paper", order_id=order_id)
+            return _deny(f"PAPER MODE: stop {order_id} cancelled. Continue.")
         return {}
 
     async def post_tool_use(self, input_data, tool_use_id, context):
@@ -165,29 +193,53 @@ class TradingSession:
         if not name.startswith(RH):
             return {}
         short = name[len(RH):]
+        args = input_data.get("tool_input") or {}
         resp = input_data.get("tool_response")
         if short in RH_READ_TOOLS:
-            self.market.ingest(short, input_data.get("tool_input"), resp)
-        elif short == "place_option_order":
-            payload = decode_tool_response(resp) or {}
-            if payload.get("data") and not payload.get("error"):
-                _, _, order = risk.check_order(self.cfg, self.state, self.plans, input_data["tool_input"])
-                if order:
-                    self._record_fill(order, mode="live", broker_response=payload["data"])
-            else:
-                self.audit("order_failed", response=str(resp)[:500])
+            self.market.ingest(short, args, resp)
+            return {}
+        payload = decode_tool_response(resp) or {}
+        data = payload.get("data")
+        if not data or payload.get("error"):
+            self.audit(f"{short}_failed", request=args, response=str(resp)[:500])
+            return {}
+        if short == "place_option_order":
+            _, _, order = risk.check_order(self.cfg, self.state, self.market, self.plans, args, self.today)
+            broker_order = data.get("order", data) if isinstance(data, dict) else {}
+            if order:
+                self._record(order, mode="live", order_id=broker_order.get("id"), broker_response=data)
+        elif short == "cancel_option_order":
+            for p in self.state.positions.values():
+                if p.get("stop") and p["stop"]["order_id"] == args.get("order_id"):
+                    p["stop"] = None
+            self.state.save()
+            self.audit("order_cancelled", order_id=args.get("order_id"))
         return {}
 
-    def _record_fill(self, order, mode, broker_response=None):
-        """Book the order at its limit price. For live opens this is the
-        intended fill; review_positions drops it next run if it never filled."""
+    def _record(self, order, mode, order_id=None, broker_response=None):
+        """Book an accepted order. Opens/closes are booked at the limit price
+        (paper fills, or the intended live fill that reconcile() corrects from
+        the broker's processed_premium); stops are attached to the position."""
         oid = order["option_id"]
-        if order["effect"] == "open":
+        if order["effect"] == "stop":
+            self.state.positions[oid]["stop"] = {
+                "order_id": order_id, "type": order["type"], "stop_price": order["stop_price"],
+                "limit_price": order.get("price"), "placed_on": self.today.isoformat(), "mode": mode}
+            self.audit("stop_placed", mode=mode, option_id=oid, stop_price=order["stop_price"], order_id=order_id)
+        elif order["effect"] == "open":
             inst = self.market.instruments[oid]
-            self.state.open_position(oid, inst, order["quantity"], order["price"], self.signals[inst["symbol"]], mode)
+            self.state.open_position(oid, inst, order["quantity"], order["price"], self.signals[inst["symbol"]],
+                                     mode, order_id=order_id)
             self.plans.pop(oid, None)
             self.audit("opened", mode=mode, option_id=oid, contract=inst, quantity=order["quantity"],
-                       price=order["price"], broker=broker_response)
+                       price=order["price"], order_id=order_id, broker=broker_response)
+        elif mode == "live":
+            # Not booked until reconcile() sees the broker fill; an unfilled
+            # GFD close lapses and the position goes back to needing a stop.
+            self.state.positions[oid]["pending_close"] = {
+                "order_id": order_id, "price": order["price"], "quantity": order["quantity"],
+                "placed_on": self.today.isoformat()}
+            self.audit("close_submitted", option_id=oid, order_id=order_id, price=order["price"])
         else:
             pnl = self.state.close_position(oid, order["quantity"], order["price"], reason=f"{mode} close")
             self.audit("closed", mode=mode, option_id=oid, quantity=order["quantity"], price=order["price"],
@@ -270,20 +322,34 @@ How decisions are split:
 
 Cycle:
 0. If the Robinhood tools are not directly available, load them with ToolSearch (e.g. "select:mcp__Robinhood__get_option_quotes,..." or a keyword search for "Robinhood"). ToolSearch waits for servers that are still connecting.
-1. Call portfolio_status. Call get_option_positions with nonzero=true. Quote every contract the agent holds (get_option_quotes), then call review_positions.
-2. For each CLOSE: review_option_order, then place_option_order (sell, position_effect close, type limit) at the suggested limit or between bid and mark. Exits take priority over new entries. For DROP rows, note them; the state is already updated.
-3. Fetch daily bars for the whole universe in one get_equity_historicals call and run compute_signals for each symbol.
+1. Protect what you hold. This comes before anything else, every run:
+   a. Call portfolio_status, then get_option_positions (nonzero=true) and get_option_orders (created_at_gte = 7 days ago). These let the code see fills, stop-outs and expired stops.
+   b. Quote every contract the agent holds (get_option_quotes), then call review_positions.
+   c. For each CLOSE row: if cancel_stop_first is set, cancel_option_order that stop first. Then place_option_order (sell, position_effect close, type limit) at suggested_limit, or between bid and mark.
+   d. For each PLACE_STOP row: place_option_order with exactly the stop_order arguments given (plus account_number).
+   e. For each RAISE_STOP row: cancel_option_order the old stop (cancel_stop_first), then place the new stop_order.
+   f. Never leave a held position without a resting stop. While any position is unprotected, the code rejects every new entry.
+2. Fetch daily bars for the whole universe in one get_equity_historicals call and run compute_signals for each symbol.
+3. If review_positions or portfolio_status lists any circuit_breakers, open nothing new this run. Report why and finish.
 4. For each BUY/SELL signal you don't veto:
    a. get_earnings_results for the symbol (ETFs return none, which is fine).
    b. get_option_chains, then pick one expiration inside the DTE window, preferring the nearest to roughly 30-45 DTE.
    c. get_option_instruments for that expiration and type, then get_option_quotes for 5-10 strikes around the money. Aim for |delta| near 0.40-0.55.
    d. Size to the per-trade premium cap, usually 1 contract. Set the limit at or slightly above the mid, never above the ask.
    e. propose_option_trade. If approved, review_option_order and then place_option_order with exactly the approved option_id, quantity and price, type limit, time_in_force gfd.
-5. End with a short report covering: mode, exits taken, signals per symbol, trades placed or vetoed with reasons, and the guardrail rejections that mattered.
+   f. Immediately protect the new position. Call get_option_positions (nonzero=true) to confirm the fill (live mode), then review_positions, then place the PLACE_STOP order it returns. If the open hasn't filled yet (WAIT_FILL), say so; the next run will place the stop.
+5. End with a short report covering:
+   - mode
+   - stops placed, raised or triggered
+   - exits
+   - signals per symbol
+   - trades placed or vetoed, with reasons
+   - circuit breakers and guardrail rejections that mattered
 
 Rules:
 - Always pass the configured account_number.
 - Only single-leg long calls and long puts. Never sell to open, never place market orders, never exercise.
+- Loss control beats opportunity. When unsure whether to hold or exit a losing position, exit. Never widen or remove a stop; the code only allows stops to stay put or move up.
 - If review_option_order returns alerts that indicate a real problem (insufficient buying power, a halted contract), skip the trade.
 - In PAPER mode, place_option_order is intercepted and returns a simulated fill. Treat that as a successful order.
 - If a Robinhood tool errors, retry once at most, then move on. Don't loop.

@@ -55,12 +55,31 @@ class State:
     def realized_pnl_on(self, day):
         return sum(t["pnl"] for t in self.trade_log if t["closed_at"][:10] == day)
 
-    def open_position(self, option_id, inst, quantity, price, signal, mode):
+    def realized_since(self, day):
+        return sum(t["pnl"] for t in self.trade_log if t["closed_at"][:10] >= day)
+
+    def losing_streak(self):
+        """Consecutive losing closes, most recent first, and when the last one closed."""
+        n = 0
+        for t in reversed(self.trade_log):
+            if t["pnl"] >= 0:
+                break
+            n += 1
+        return n, (self.trade_log[-1]["closed_at"][:10] if self.trade_log else None)
+
+    def last_loss_on(self, symbol):
+        for t in reversed(self.trade_log):
+            if t["symbol"] == symbol and t["pnl"] < 0:
+                return t["closed_at"][:10]
+        return None
+
+    def open_position(self, option_id, inst, quantity, price, signal, mode, order_id=None):
         self.positions[option_id] = {
             "symbol": inst["symbol"], "type": inst["type"], "strike": inst["strike"],
             "expiration": inst["expiration"], "quantity": quantity, "entry_price": price,
             "entry_votes": signal["votes"], "direction": 1 if inst["type"] == "call" else -1,
-            "mode": mode, "opened_at": now_iso(),
+            "mode": mode, "opened_at": now_iso(), "open_order_id": order_id, "filled": mode == "paper",
+            "hwm": price, "stop": None,
         }
 
     def close_position(self, option_id, quantity, exit_price, reason):

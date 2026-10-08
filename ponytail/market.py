@@ -48,6 +48,7 @@ class MarketCache:
         self.quotes = {}       # option_id -> {bid, ask, mark, delta, open_interest, iv, updated_at}
         self.earnings = {}     # symbol -> [YYYY-MM-DD] report dates (empty list = looked up, none)
         self.broker_positions = None  # option_id -> quantity, once get_option_positions is seen
+        self.orders = {}       # order_id -> normalized option order (fills, stops, cancels)
 
     def ingest(self, tool, tool_input, resp):
         payload = decode_tool_response(resp)
@@ -75,6 +76,9 @@ class MarketCache:
                 "strike": _f(inst.get("strike_price")),
                 "expiration": inst.get("expiration_date"),
                 "tradable": inst.get("tradability") == "tradable" and inst.get("state") == "active",
+                "ticks": {"above": _f((inst.get("min_ticks") or {}).get("above_tick")),
+                          "below": _f((inst.get("min_ticks") or {}).get("below_tick")),
+                          "cutoff": _f((inst.get("min_ticks") or {}).get("cutoff_price"))},
             }
 
     def _ingest_get_option_quotes(self, data, tool_input):
@@ -112,6 +116,22 @@ class MarketCache:
             if option_id and qty > 0 and pos.get("type", "long") == "long":
                 held[option_id] = qty
         self.broker_positions = held
+
+    def _ingest_get_option_orders(self, data, tool_input):
+        for o in data.get("orders", []):
+            legs = o.get("legs") or [{}]
+            self.ingest_order(o, legs[0])
+
+    def ingest_order(self, o, leg):
+        if not o.get("id"):
+            return
+        self.orders[o["id"]] = {
+            "state": o.get("state"), "type": o.get("type"), "trigger": o.get("trigger"),
+            "option_id": leg.get("option_id"), "side": leg.get("side"), "effect": leg.get("position_effect"),
+            "quantity": _f(o.get("quantity")), "processed_quantity": _f(o.get("processed_quantity")) or 0,
+            "processed_premium": _f(o.get("processed_premium")), "multiplier": _f(o.get("trade_value_multiplier")) or 100,
+            "stop_price": _f(o.get("stop_price")), "time_in_force": o.get("time_in_force"),
+        }
 
     def quote_age_minutes(self, option_id, now=None):
         updated = (self.quotes.get(option_id) or {}).get("updated_at")

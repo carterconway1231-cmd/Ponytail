@@ -38,6 +38,31 @@ Robinhood's official MCP server.
   - the limit price is between the bid and ask
   - the per-trade premium cap, total premium at risk, max open positions and the daily-loss kill switch all hold
 - **Closes** must be sell-to-close of a position the agent holds. Exits are never blocked by portfolio limits.
+
+### Stop losses and loss limits
+
+Every position is protected by a **real stop order resting at Robinhood**, so a losing trade gets cut even when the agent isn't running.
+
+| Protection | How it works |
+|---|---|
+| **Protective stop** | A sell-to-close stop order at `entry × (1 − STOP_LOSS_PCT)` (35% below entry by default), placed right after the open fills. The hook only accepts stops for the full position, at or above the required level, and below the current bid. |
+| **Trailing stop** | Once the mark is up `TRAIL_ACTIVATE_PCT` (30%), the required stop rises to `high-water mark × (1 − TRAIL_PCT)` (25% below the peak). It ratchets up only: the code rejects any stop looser than required, and an active stop can be cancelled only to raise it or to exit. |
+| **No naked positions** | While any held position lacks an active stop, every new entry is rejected. |
+| **Backup exit rule** | If the bid is already at or below the stop level, `review_positions` orders an immediate limit close. This covers a stop that lapsed or a stop-limit that gapped through. |
+| **Daily loss limit** | Realized losses today plus current open losses ≥ `MAX_DAILY_LOSS` → no new entries. |
+| **Weekly loss limit** | Realized losses over the trailing 7 days ≥ `MAX_WEEKLY_LOSS` → no new entries. |
+| **Losing streak** | `MAX_CONSECUTIVE_LOSSES` losers in a row → no new entries for the rest of the day. |
+| **Cooldown** | No re-entry in a symbol for `LOSS_COOLDOWN_DAYS` after a losing exit. |
+| **Premium caps** | No single trade can lose more than `MAX_PREMIUM_PER_TRADE`, and the whole book can't lose more than `MAX_TOTAL_PREMIUM`. |
+
+Each run reconciles against Robinhood's order history:
+
+- stops that filled at the broker are booked at their actual fill price, and the weights learn from the loss
+- expired or cancelled stops are flagged for re-placement
+- live opens are re-priced to their actual fill
+- live closes aren't booked until the broker confirms the fill, so a close that doesn't fill can't silently leave you holding an unprotected position
+
+**Choosing the stop type.** Robinhood only accepts `stop_market` as a day order. It guarantees an exit, which matches how you place stops yourself today, but it lapses at the close, so the first run each day re-places it. Schedule a run right after the open (9:31 ET). `stop_limit` can be good-till-cancelled and keeps protecting overnight, but if the price gaps below its limit it may not fill; the backup exit rule then closes the position on the next run.
 - **Paper mode** (`LIVE_TRADING=false`, the default). Orders are intercepted before reaching Robinhood and booked as simulated fills at the limit price, so the whole loop, including learning, runs without money.
 
 ## Setup
@@ -61,17 +86,20 @@ python -m ponytail --paper   # one paper cycle (forces paper even if LIVE_TRADIN
 python -m ponytail           # one cycle in the mode set by LIVE_TRADING
 ```
 
-Schedule it during market hours. For example, in cron (times are in the host's timezone):
+Schedule it during market hours, with the first run right after the open so day-only stops are re-placed quickly. For example, in cron (times are in the host's timezone, set to ET here):
 
 ```
-35 9,12,15 * * 1-5  cd /path/to/Ponytail && python -m ponytail >> agent.log 2>&1
+31 9 * * 1-5        cd /path/to/Ponytail && python -m ponytail >> agent.log 2>&1
+0 11,13,15 * * 1-5  cd /path/to/Ponytail && python -m ponytail >> agent.log 2>&1
 ```
+
+More runs mean faster trailing-stop updates and backup exits.
 
 Each run appends a record to `agent_state.json` under `runs`: signals, every guardrail decision, Claude's summary and the run's cost. Positions, the closed-trade log and the learned weights live in the same file.
 
 ## Known limitations
 
-- **Live fill price.** Live fills are booked at the limit price. If an opening order never fills, the next run sees the contract missing from the broker positions and drops it without learning. The true average fill price isn't reconciled from `get_option_orders` yet.
+- **Gap risk.** Stops limit losses but can't guarantee a price. Options can gap well past a stop on news, and `stop_market` stops only exist from the agent's first run each day.
 - **Daily bars only.** Signals are recomputed on daily bars, so running more than once a day mainly helps exits react to intraday price.
 - **Legacy bot.** `robinhood_trading_bot.py` is the original equity bot on `robin_stocks`. It's separate from the agent and kept for reference.
 

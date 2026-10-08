@@ -17,6 +17,13 @@ def _int(name, default):
     return int(os.environ.get(name, default))
 
 
+def _stop_type(value):
+    value = value.strip().lower()
+    if value not in ("stop_market", "stop_limit"):
+        raise SystemExit("STOP_ORDER_TYPE must be stop_market or stop_limit")
+    return value
+
+
 @dataclass(frozen=True)
 class Config:
     account_number: str
@@ -27,7 +34,10 @@ class Config:
     max_premium_per_trade: float = 200.0
     max_total_premium: float = 600.0
     max_open_positions: int = 3
-    max_daily_loss: float = 150.0
+    max_daily_loss: float = 150.0      # realized today + current unrealized losses
+    max_weekly_loss: float = 300.0     # realized over the trailing 7 days
+    max_consecutive_losses: int = 3    # pause new entries for the day after this many losers
+    loss_cooldown_days: int = 3        # no re-entry in a symbol this soon after a losing exit
 
     # Contract selection
     min_dte: int = 14
@@ -41,7 +51,11 @@ class Config:
 
     # Exit rules
     take_profit_pct: float = 0.50
-    stop_loss_pct: float = 0.40
+    stop_loss_pct: float = 0.35        # protective stop at entry * (1 - this)
+    trail_activate_pct: float = 0.30   # start trailing once up this much
+    trail_pct: float = 0.25            # trailing stop distance below the high-water mark
+    stop_order_type: str = "stop_market"  # or "stop_limit" (GTC, but can miss on a gap)
+    stop_limit_buffer_pct: float = 0.15   # stop_limit: limit this far below the trigger
     exit_dte: int = 7
 
     # Agent runtime
@@ -67,6 +81,9 @@ class Config:
             max_total_premium=_float("MAX_TOTAL_PREMIUM", 600),
             max_open_positions=_int("MAX_OPEN_POSITIONS", 3),
             max_daily_loss=_float("MAX_DAILY_LOSS", 150),
+            max_weekly_loss=_float("MAX_WEEKLY_LOSS", 300),
+            max_consecutive_losses=_int("MAX_CONSECUTIVE_LOSSES", 3),
+            loss_cooldown_days=_int("LOSS_COOLDOWN_DAYS", 3),
             min_dte=_int("MIN_DTE", 14),
             max_dte=_int("MAX_DTE", 60),
             min_abs_delta=_float("MIN_ABS_DELTA", 0.30),
@@ -76,7 +93,11 @@ class Config:
             max_quote_age_min=_float("MAX_QUOTE_AGE_MIN", 30),
             avoid_earnings=_bool("AVOID_EARNINGS", True),
             take_profit_pct=_float("TAKE_PROFIT_PCT", 0.50),
-            stop_loss_pct=_float("STOP_LOSS_PCT", 0.40),
+            stop_loss_pct=_float("STOP_LOSS_PCT", 0.35),
+            trail_activate_pct=_float("TRAIL_ACTIVATE_PCT", 0.30),
+            trail_pct=_float("TRAIL_PCT", 0.25),
+            stop_order_type=_stop_type(os.environ.get("STOP_ORDER_TYPE", "stop_market")),
+            stop_limit_buffer_pct=_float("STOP_LIMIT_BUFFER_PCT", 0.15),
             exit_dte=_int("EXIT_DTE", 7),
             model=os.environ.get("AGENT_MODEL", "claude-opus-5-5"),
             effort=os.environ.get("AGENT_EFFORT", "high"),
