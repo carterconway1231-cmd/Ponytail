@@ -2,28 +2,34 @@
 Claude agent loop that talks to the official Robinhood MCP server.
 
 Division of labor:
-  * Code (signals.py) decides direction: BUY -> long call, SELL -> long put.
-  * Claude does the judgment work: vetoes on context (earnings, news-driven
-    moves, fundamentals, analyst consensus), picks the contract, sets the
-    limit price, and manages exits.
+  * Code decides direction (factors.py + learner.py), structure from the
+    volatility regime (volatility.py), candidate contracts by expected value
+    (selection.py) and size by edge (sizing.py).
+  * Claude does the judgment work: reads the chart narrative, vetoes on
+    context (earnings, fundamentals, news-driven moves), chooses among the
+    ranked candidates, and manages exits.
   * Code (risk.py, enforced in PreToolUse hooks) has the final say on every
     order. A denied tool call never reaches Robinhood.
 """
 import json
 import logging
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from claude_agent_sdk import (
     AssistantMessage, ClaudeAgentOptions, HookMatcher, ResultMessage, TextBlock, ToolUseBlock,
     create_sdk_mcp_server, query, tool,
 )
 
-from . import protect, risk
-from .market import MarketCache, decode_tool_response
+from . import events as macro, protect, risk, selection, sizing
 from .factors import compute_factors
 from .learner import Learner
-from .warmstart import replay
+from .market import MarketCache, decode_tool_response
 from .state import State, now_iso
+from .volatility import VolBook, atm_iv, realized_vol
+from .warmstart import replay
+
+ET = ZoneInfo("America/New_York")
 
 log = logging.getLogger("ponytail")
 
@@ -35,10 +41,11 @@ RH_READ_TOOLS = {
     "get_equity_fundamentals", "get_equity_analyst_ratings", "get_equity_technical_indicators",
     "get_earnings_results", "get_option_chains", "get_option_instruments", "get_option_quotes",
     "get_option_positions", "get_option_orders", "search",
+    "preview_scan", "get_indexes", "get_index_historicals", "get_index_quotes",
 }
 RH_WRITE_TOOLS = {"review_option_order", "place_option_order", "cancel_option_order"}
-LOCAL_TOOLS = {"compute_signals", "propose_option_trade", "review_positions", "portfolio_status", "learning_report",
-               "warm_start"}
+LOCAL_TOOLS = {"compute_signals", "rank_contracts", "propose_option_trade", "review_positions", "portfolio_status",
+               "learning_report", "warm_start"}
 
 ALLOWED_TOOLS = (
     {RH + t for t in RH_READ_TOOLS | RH_WRITE_TOOLS}
@@ -59,11 +66,15 @@ def _deny(reason):
 class TradingSession:
     """Everything one agent run needs; hooks and tools close over it."""
 
-    def __init__(self, cfg, today=None):
+    def __init__(self, cfg, today=None, monitor=False, clock=None):
         self.cfg = cfg
         self.today = today or date.today()
+        self.monitor = monitor  # cheap position-management run: no new entries
+        self.clock = clock or (lambda: datetime.now(ET))
         self.state = State.load(cfg.state_path)
         self.learner = self.state.learner = Learner(self.state.data["learner"], cfg, today=self.today)
+        self.vols = VolBook(self.state.data.setdefault("iv_history", {}), cfg)
+        self.macro_events = macro.load_events(cfg.events_path)
         self.market = MarketCache()
         self.signals = {}  # symbol -> {votes, score, decision, rsi}
         self.plans = {}    # option_id -> approved open plan
@@ -73,6 +84,37 @@ class TradingSession:
     @property
     def mode(self):
         return "live" if self.cfg.live_trading else "paper"
+
+    @property
+    def discovered(self):
+        """Top scanner candidates (unusual options activity) outside the core universe."""
+        if not self.cfg.discover or not self.market.scan:
+            return []
+        rows = [r for r in self.market.scan if r["symbol"] not in self.cfg.symbols
+                and (r["last"] or 0) >= 10 and (r["options_volume"] or 0) >= 20000]
+        rows.sort(key=lambda r: -(r["rel_options_volume"] or 0))
+        return [r["symbol"] for r in rows[:self.cfg.max_discovered]]
+
+    @property
+    def universe(self):
+        return list(self.cfg.symbols) + self.discovered
+
+    def equity(self):
+        if self.cfg.live_trading:
+            return self.market.equity
+        return self.cfg.paper_capital + sum(t["pnl"] for t in self.state.trade_log if t.get("mode") == "paper")
+
+    def entry_window_open(self):
+        now = self.clock().strftime("%H:%M")
+        start, end = self.cfg.entry_window
+        return start <= now <= end
+
+    def vol_assessment(self, symbol):
+        iv = atm_iv(symbol, self.market, self.today)
+        if iv:
+            self.vols.record(symbol, self.today.isoformat(), iv)
+        daily = self.market.bars.get(symbol, {}).get("day") or []
+        return self.vols.assess(symbol, iv, realized_vol(daily) if daily else None)
 
     def audit(self, kind, **fields):
         event = {"at": now_iso(), "kind": kind, **fields}
@@ -107,19 +149,87 @@ class TradingSession:
             "past_signals_graded_now": labeled,
         }
 
-    def propose_option_trade(self, option_id, quantity, limit_price, thesis):
-        problems = risk.check_open(self.cfg, self.state, self.market, self.signals, option_id,
-                                   quantity, limit_price, self.today)
+    def rank_contracts(self, symbol, structure="auto"):
+        symbol = symbol.upper()
+        signal = self.signals.get(symbol)
+        if not signal or signal["decision"] == "HOLD":
+            return {"error": f"no BUY/SELL signal for {symbol} this run; run compute_signals first"}
+        vol = self.vol_assessment(symbol)
+        if structure == "auto":
+            structure = vol["structure"]
+        if structure == "skip":
+            return {"vol": vol, "candidates": [], "note": "IV is expensive and spreads are disabled: skip this one"}
+        daily = self.market.bars.get(symbol, {}).get("day") or []
+        rows = selection.rank(self.cfg, self.market, signal, symbol, realized_vol(daily) if daily else None,
+                              self.today, structure)
+        equity = self.equity()
+        for r in rows:
+            n, info = sizing.max_contracts(self.cfg, equity or 0, signal, r["expected_cost"], bool(r["short_option_id"]))
+            r["max_contracts"], r["sizing"] = n, info
+        if not rows:
+            return {"vol": vol, "candidates": [],
+                    "note": "no candidates: quote more strikes/expirations (and further-OTM strikes for spreads)"}
+        return {"vol": vol, "structure": structure, "candidates": rows,
+                "note": "propose the best candidate whose story you believe, at or below suggested_limit"}
+
+    def propose_option_trade(self, option_id, quantity, limit_price, thesis, short_option_id=None):
+        cfg = self.cfg
+        problems = risk.check_open(cfg, self.state, self.market, self.signals, option_id, quantity, limit_price,
+                                   self.today, short_option_id=short_option_id, universe=self.universe)
         inst = self.market.instruments.get(option_id, {})
+        plan_extra = {}
+        if self.monitor:
+            problems.append("monitor runs manage positions only; new entries happen on full runs")
+        if not self.entry_window_open():
+            problems.append(f"outside the entry window {'-'.join(cfg.entry_window)} ET (open/close auctions are "
+                            "where spreads are widest)")
+        for e in macro.blackout(self.macro_events, self.today, cfg.event_blackout_days):
+            problems.append(f"macro blackout: {e['name']} on {e['date']}")
+        signal = self.signals.get(inst.get("symbol"))
+        if inst and signal and option_id in self.market.quotes and \
+                (not short_option_id or short_option_id in self.market.quotes):
+            vol = self.vol_assessment(inst["symbol"])
+            if vol["structure"] == "skip":
+                problems.append(f"IV is expensive ({vol}) and spreads are disabled")
+            elif vol["structure"] == "debit_spread" and not short_option_id:
+                problems.append(f"IV is expensive (rank {vol['iv_rank']}, IV/RV {vol['iv_rv_ratio']}): "
+                                "use a debit spread to sell back the rich premium")
+            spot = selection.underlying_spot(self.market, inst["symbol"])
+            daily = self.market.bars.get(inst["symbol"], {}).get("day") or []
+            if spot is None:
+                problems.append("no underlying price: fetch bars first")
+            else:
+                ev = selection.evaluate(cfg, self.market, signal, spot, realized_vol(daily) if daily else None,
+                                        option_id, short_option_id, self.today)
+                ev_at_limit = (ev["ev_per_share"] + ev["expected_cost"] - limit_price) / limit_price
+                if ev_at_limit < cfg.min_contract_ev:
+                    problems.append(f"expected value {ev_at_limit:+.1%} per dollar at limit {limit_price} is below "
+                                    f"{cfg.min_contract_ev:+.0%} (premium/decay outweigh the measured edge)")
+                plan_extra.update(entry_mid=ev["mid"], ev_per_dollar=round(ev_at_limit, 3), vol_regime=vol["regime"])
+            equity = self.equity()
+            if equity is None:
+                problems.append("account equity unknown: call get_portfolio first")
+            else:
+                n, info = sizing.max_contracts(cfg, equity, signal, limit_price, bool(short_option_id))
+                if quantity > n:
+                    problems.append(f"{quantity:g} contracts exceeds the {n} the risk budget allows ({info})")
         if problems:
             self.audit("plan_rejected", option_id=option_id, symbol=inst.get("symbol"), problems=problems)
             return {"approved": False, "problems": problems}
-        self.plans[option_id] = {"quantity": float(quantity), "limit_price": float(limit_price), "thesis": thesis}
+        self.plans[option_id] = {"quantity": float(quantity), "limit_price": float(limit_price), "thesis": thesis,
+                                 "short_option_id": short_option_id, **plan_extra}
         cost = limit_price * quantity * 100
-        self.audit("plan_approved", option_id=option_id, contract=inst, quantity=quantity,
-                   limit_price=limit_price, cost=cost, thesis=thesis)
+        self.audit("plan_approved", option_id=option_id, short_option_id=short_option_id, contract=inst,
+                   quantity=quantity, limit_price=limit_price, cost=cost, thesis=thesis, **plan_extra)
+        legs = [{"option_id": option_id, "side": "buy", "position_effect": "open"}]
+        if short_option_id:
+            legs.append({"option_id": short_option_id, "side": "sell", "position_effect": "open"})
+        order = {"account_number": self.cfg.account_number, "legs": legs, "quantity": f"{quantity:g}",
+                 "type": "limit", "price": f"{limit_price:.2f}", "time_in_force": "gfd",
+                 **({"direction": "debit"} if short_option_id else {})}
         return {"approved": True, "contract": inst, "quantity": quantity, "limit_price": limit_price,
-                "premium_at_risk": round(cost, 2), "next": "review_option_order, then place_option_order with these exact values"}
+                "premium_at_risk": round(cost, 2), **plan_extra,
+                "next": "review_option_order, then place_option_order with exactly these arguments", "order": order}
 
     def review_positions(self):
         events = protect.reconcile(self.cfg, self.state, self.market, self.today)
@@ -265,9 +375,13 @@ class TradingSession:
             self.audit("stop_placed", mode=mode, option_id=oid, stop_price=order["stop_price"], order_id=order_id)
         elif order["effect"] == "open":
             inst = self.market.instruments[oid]
+            plan = self.plans.pop(oid, {})
+            short = None
+            if order.get("short_option_id"):
+                short = {"option_id": order["short_option_id"], **self.market.instruments[order["short_option_id"]]}
             self.state.open_position(oid, inst, order["quantity"], order["price"], self.signals[inst["symbol"]],
-                                     mode, order_id=order_id)
-            self.plans.pop(oid, None)
+                                     mode, order_id=order_id, short=short,
+                                     extra={k: plan[k] for k in ("entry_mid", "vol_regime", "ev_per_dollar") if k in plan})
             self.audit("opened", mode=mode, option_id=oid, contract=inst, quantity=order["quantity"],
                        price=order["price"], order_id=order_id, broker=broker_response)
         elif mode == "live":
@@ -301,13 +415,28 @@ class TradingSession:
               "fetched via get_option_instruments and quoted via get_option_quotes this run, and earnings "
               "checked via get_earnings_results. Returns approved or the list of violated rules.",
               {"type": "object", "properties": {
-                  "option_id": {"type": "string"},
+                  "option_id": {"type": "string", "description": "the long (bought) contract"},
+                  "short_option_id": {"type": "string", "description": "for a debit spread: the further-OTM contract sold"},
                   "quantity": {"type": "integer", "minimum": 1},
-                  "limit_price": {"type": "number", "description": "Per-contract limit, between bid and ask"},
+                  "limit_price": {"type": "number", "description": "Per-contract limit (net debit for a spread)"},
                   "thesis": {"type": "string", "description": "Why this trade, in two or three sentences"}},
                "required": ["option_id", "quantity", "limit_price", "thesis"]})
         async def propose_option_trade(args):
-            return _text(s.propose_option_trade(args["option_id"], args["quantity"], float(args["limit_price"]), args["thesis"]))
+            return _text(s.propose_option_trade(args["option_id"], args["quantity"], float(args["limit_price"]),
+                                                args["thesis"], args.get("short_option_id") or None))
+
+        @tool("rank_contracts",
+              "Rank candidate contracts for a BUY/SELL signal by expected value per dollar, after checking the "
+              "volatility regime (cheap IV: long call/put; expensive IV: debit spread). Uses the contracts "
+              "fetched/quoted this run, so quote a spread of strikes and expirations first. Returns the vol "
+              "assessment, top candidates with suggested limit, EV, breakeven, theta, and max contracts by risk budget.",
+              {"type": "object", "properties": {
+                  "symbol": {"type": "string"},
+                  "structure": {"type": "string", "enum": ["auto", "long", "debit_spread", "any"],
+                                "description": "auto follows the volatility regime"}},
+               "required": ["symbol"]})
+        async def rank_contracts(args):
+            return _text(s.rank_contracts(args["symbol"], args.get("structure", "auto")))
 
         @tool("review_positions", "Apply the exit rules (take profit, stop loss, DTE, signal reversal) to every "
               "agent-held position. Quote held contracts and fetch nonzero positions first.", {})
@@ -328,8 +457,8 @@ class TradingSession:
         async def portfolio_status(args):
             return _text(s.portfolio_status())
 
-        return create_sdk_mcp_server("ponytail", tools=[compute_signals, propose_option_trade, review_positions, portfolio_status, learning_report,
-                                                       warm_start])
+        return create_sdk_mcp_server("ponytail", tools=[compute_signals, rank_contracts, propose_option_trade, review_positions,
+                                                       portfolio_status, learning_report, warm_start])
 
     def options(self):
         servers = {"ponytail": self.local_server()}

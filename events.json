@@ -1,0 +1,16 @@
+{
+  "_note": "Macro events that move all options at once. New entries are blocked EVENT_BLACKOUT_DAYS before each. FOMC dates are decision days (statement 2pm ET), from the Fed schedule as republished by the Chicago Fed; 2027 is tentative. CPI releases are 8:30am ET from the BLS calendar. Verify against federalreserve.gov and bls.gov, and add CPI dates as BLS publishes them; the agent warns when no CPI date is listed for the next 45 days.",
+  "events": [
+    {"date": "2026-10-14", "kind": "CPI", "name": "CPI (September 2026)"},
+    {"date": "2026-10-28", "kind": "FOMC", "name": "FOMC decision"},
+    {"date": "2026-12-09", "kind": "FOMC", "name": "FOMC decision + SEP"},
+    {"date": "2027-01-27", "kind": "FOMC", "name": "FOMC decision (tentative)"},
+    {"date": "2027-03-17", "kind": "FOMC", "name": "FOMC decision (tentative)"},
+    {"date": "2027-04-28", "kind": "FOMC", "name": "FOMC decision (tentative)"},
+    {"date": "2027-06-09", "kind": "FOMC", "name": "FOMC decision (tentative)"},
+    {"date": "2027-07-28", "kind": "FOMC", "name": "FOMC decision (tentative)"},
+    {"date": "2027-09-15", "kind": "FOMC", "name": "FOMC decision (tentative)"},
+    {"date": "2027-10-27", "kind": "FOMC", "name": "FOMC decision (tentative)"},
+    {"date": "2027-12-08", "kind": "FOMC", "name": "FOMC decision (tentative)"}
+  ]
+}

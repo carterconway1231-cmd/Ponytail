@@ -76,9 +76,31 @@ def is_confirmed(pos, market):
     return market.broker_positions is not None and pos.get("option_id") in market.broker_positions
 
 
+def is_spread(pos):
+    return pos.get("kind") == "spread"
+
+
+def position_mark(oid, pos, market):
+    """(mark, exit_bid, exit_ask) per share/unit of the position, or None.
+    For a debit spread: long leg minus short leg; exiting sells the long at
+    its bid and buys the short at its ask."""
+    q = market.quotes.get(oid)
+    if not q or not q.get("mark"):
+        return None
+    if not is_spread(pos):
+        return q["mark"], q.get("bid") or 0.0, q.get("ask") or 0.0
+    s = market.quotes.get(pos["short_option_id"])
+    if not s or s.get("mark") is None:
+        return None
+    return (q["mark"] - s["mark"], max(0.0, (q.get("bid") or 0) - (s.get("ask") or 0)),
+            (q.get("ask") or 0) - (s.get("bid") or 0))
+
+
 def unprotected(state, market, today):
+    """Held singles without a resting stop. Debit spreads are exempt: their
+    max loss is the debit paid, and Robinhood stops are single-leg only."""
     return [oid for oid, p in state.positions.items()
-            if is_confirmed({**p, "option_id": oid}, market) and not stop_is_active(p, today)]
+            if not is_spread(p) and is_confirmed({**p, "option_id": oid}, market) and not stop_is_active(p, today)]
 
 
 def fill_price(order):
@@ -138,10 +160,12 @@ def reconcile(cfg, state, market, today):
                 events.append({"kind": "dropped", "option_id": oid, "filled": bool(pos.get("filled"))})
                 continue
 
-        # Track the high-water mark that drives the trailing stop.
-        quote = market.quotes.get(oid)
-        if quote and quote.get("mark"):
-            pos["hwm"] = max(pos.get("hwm") or pos["entry_price"], quote["mark"])
+        # Track best/worst marks: the high-water mark drives the trailing stop,
+        # and both feed exit learning (max favorable/adverse excursion).
+        m = position_mark(oid, pos, market)
+        if m:
+            pos["hwm"] = max(pos.get("hwm") or pos["entry_price"], m[0])
+            pos["lwm"] = min(pos.get("lwm") or pos["entry_price"], m[0])
     return events
 
 
@@ -151,7 +175,7 @@ def simulate_paper_stops(state, market, today):
     for oid in list(state.positions):
         pos = state.positions[oid]
         stop, quote = pos.get("stop"), market.quotes.get(oid)
-        if pos["mode"] != "paper" or not stop or not stop_is_active(pos, today) or not quote or not quote.get("mark"):
+        if is_spread(pos) or pos["mode"] != "paper" or not stop or not stop_is_active(pos, today) or not quote or not quote.get("mark"):
             continue
         if quote["mark"] > stop["stop_price"]:
             continue

@@ -71,13 +71,17 @@ class State:
                 return t["closed_at"][:10]
         return None
 
-    def open_position(self, option_id, inst, quantity, price, signal, mode, order_id=None):
+    def open_position(self, option_id, inst, quantity, price, signal, mode, order_id=None, short=None, extra=None):
+        """price is the per-share debit: the option's price, or the spread's net debit."""
         self.positions[option_id] = {
             "symbol": inst["symbol"], "type": inst["type"], "strike": inst["strike"],
             "expiration": inst["expiration"], "quantity": quantity, "entry_price": price,
             "entry_signal": signal, "direction": 1 if inst["type"] == "call" else -1,
             "mode": mode, "opened_at": now_iso(), "open_order_id": order_id, "filled": mode == "paper",
-            "hwm": price, "stop": None,
+            "hwm": price, "lwm": price, "stop": None, "kind": "spread" if short else "single",
+            **({"short_option_id": short["option_id"], "short_strike": short["strike"],
+                "width": abs(short["strike"] - inst["strike"])} if short else {}),
+            **(extra or {}),
         }
 
     def close_position(self, option_id, quantity, exit_price, reason):
@@ -93,7 +97,13 @@ class State:
             "quantity": quantity, "entry_price": pos["entry_price"], "exit_price": exit_price,
             "pnl": round(pnl, 2), "r": round(pnl / premium, 3) if premium else None, "reason": reason,
             "entry_conviction": sig.get("conviction"), "entry_regime": sig.get("regime"),
-            "agreeing_factors": sig.get("agree"), "closed_at": now_iso(),
+            "agreeing_factors": sig.get("agree"), "kind": pos.get("kind", "single"),
+            "mfe": round((pos.get("hwm", pos["entry_price"]) - pos["entry_price"]) / pos["entry_price"], 3),
+            "mae": round((pos.get("lwm", pos["entry_price"]) - pos["entry_price"]) / pos["entry_price"], 3),
+            "held_days": (datetime.now(timezone.utc) - datetime.fromisoformat(pos["opened_at"])).days,
+            "slippage_pct": round((pos["entry_price"] - pos["entry_mid"]) / pos["entry_mid"], 4)
+            if pos.get("entry_mid") else None, "vol_regime": pos.get("vol_regime"),
+            "closed_at": now_iso(),
         })
         pos["quantity"] -= quantity
         if pos["quantity"] <= 0:

@@ -140,6 +140,8 @@ class Learner:
         avg_loss = c["loss_r"] / c["losses"] if c["losses"] else None
         ev = p * avg_win + (1 - p) * avg_loss if avg_win is not None and avg_loss is not None else None
         return {"p_win": round(p, 3), "expected_r": None if ev is None else round(ev, 3),
+                "avg_win_r": None if avg_win is None else round(avg_win, 3),
+                "avg_loss_r": None if avg_loss is None else round(avg_loss, 3),
                 "bucket_trades": c["n_trades"]}
 
     # ---- learning ------------------------------------------------------------

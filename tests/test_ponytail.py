@@ -1,7 +1,9 @@
 import asyncio
 import dataclasses
 import json
+import os
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pytest
@@ -12,6 +14,12 @@ from ponytail.config import Config
 from ponytail.market import MarketCache
 
 TODAY = date(2026, 10, 8)
+FIX = os.path.join(os.path.dirname(__file__), "fixtures")
+
+
+def real_bars(kind):
+    return [b for b in json.load(open(os.path.join(FIX, f"spy_{kind}.json"))) if not b.get("interpolated")]
+
 ACCT = "955800222"
 OID = "a1f83876-a9ea-4f17-b04e-4ce2428567ee"
 
@@ -54,14 +62,26 @@ def sig(decision, **kw):
                         "structure": {"score": 1.0}, "ote": {"score": 0.0}}, **kw}
 
 
+MARKET_HOURS = lambda: datetime(2026, 10, 8, 10, 30, tzinfo=ZoneInfo("America/New_York"))  # noqa: E731
+
+
 @pytest.fixture
 def cfg(tmp_path):
-    return Config(account_number=ACCT, symbols=["SPY", "QQQ"], state_path=str(tmp_path / "state.json"))
+    # Plumbing tests neutralize the EV and vol-regime gates; dedicated tests cover them.
+    return Config(account_number=ACCT, symbols=["SPY", "QQQ"], state_path=str(tmp_path / "state.json"),
+                  min_contract_ev=-1.0, iv_rv_expensive=99.0, iv_rank_expensive=101.0,
+                  events_path=str(tmp_path / "no-events.json"))
+
+
+def ingest_spy_bars(s):
+    s.market.ingest("get_equity_historicals", {}, mcp({"data": {"results": [
+        {"symbol": "SPY", "interval": "day", "bars": real_bars("day")}]}}))
 
 
 @pytest.fixture
 def session(cfg):
-    s = TradingSession(cfg, today=TODAY)
+    s = TradingSession(cfg, today=TODAY, clock=MARKET_HOURS)
+    ingest_spy_bars(s)
     s.signals["SPY"] = sig("BUY")
     s.market.ingest("get_option_instruments", {}, instruments_resp())
     s.market.ingest("get_option_quotes", {}, quotes_resp())
@@ -155,7 +175,7 @@ def test_unplanned_open_is_denied(session):
     (order(side="sell"), "buy-to-open"),
     (order(type="market"), "limit"),
     (order(account_number="475262101"), "configured agent account"),
-    (order(legs=[{"option_id": OID, "side": "buy", "position_effect": "open"}] * 2), "single-leg"),
+    (order(legs=[{"option_id": OID, "side": "buy", "position_effect": "open"}] * 2), "2-leg debit verticals"),
 ])
 def test_order_shape_rules(session, bad, reason):
     session.propose_option_trade(OID, 1, 1.55, "test")
@@ -196,7 +216,9 @@ def test_paper_round_trip_learns_from_pnl(session):
 
 
 def test_live_mode_allows_and_books_on_success(cfg):
-    s = TradingSession(dataclasses.replace(cfg, live_trading=True), today=TODAY)
+    s = TradingSession(dataclasses.replace(cfg, live_trading=True), today=TODAY, clock=MARKET_HOURS)
+    ingest_spy_bars(s)
+    s.market.equity = 3000.0
     s.signals["SPY"] = sig("BUY")
     s.market.ingest("get_option_instruments", {}, instruments_resp())
     s.market.ingest("get_option_quotes", {}, quotes_resp())
@@ -275,7 +297,9 @@ def test_new_entries_blocked_until_position_has_a_stop(session):
     assert row["stop_order"]["stop_price"] == "1.01" and row["stop_order"]["type"] == "stop_market"
     out = pre(session, RH + "place_option_order", {**row["stop_order"], "account_number": ACCT})
     assert "protective stop_market at 1.01" in reason(out)
-    assert session.propose_option_trade(QQQ_ID, 1, 1.55, "t")["approved"]
+    session.market.bars["QQQ"] = session.market.bars["SPY"]  # any price history works for the spot
+    res = session.propose_option_trade(QQQ_ID, 1, 1.55, "t")
+    assert res["approved"], res
 
 
 @pytest.mark.parametrize("bad, why", [
@@ -368,7 +392,9 @@ def test_unrealized_losses_count_toward_daily_limit(session):
 
 
 def live_session(cfg):
-    s = TradingSession(dataclasses.replace(cfg, live_trading=True), today=TODAY)
+    s = TradingSession(dataclasses.replace(cfg, live_trading=True), today=TODAY, clock=MARKET_HOURS)
+    ingest_spy_bars(s)
+    s.market.equity = 3000.0
     s.signals["SPY"] = sig("BUY")
     s.market.ingest("get_option_instruments", {}, instruments_resp())
     s.market.ingest("get_option_quotes", {}, quotes_resp())
@@ -428,16 +454,8 @@ def test_live_close_is_pending_until_filled(cfg):
 
 # ---- factor engine ---------------------------------------------------------------
 
-import os  # noqa: E402
-
 from ponytail import factors as fx  # noqa: E402
 from ponytail.learner import Learner  # noqa: E402
-
-FIX = os.path.join(os.path.dirname(__file__), "fixtures")
-
-
-def real_bars(kind):
-    return [b for b in json.load(open(os.path.join(FIX, f"spy_{kind}.json"))) if not b.get("interpolated")]
 
 
 def hbars(rows):
@@ -648,3 +666,152 @@ def test_bar_dumps_are_replaced_with_a_summary_for_the_model(session):
     text = out["hookSpecificOutput"]["updatedToolOutput"][0]["text"]
     assert "SPY day: 206 bars" in text and len(text) < 300
     assert len(session.market.bars["SPY"]["day"]) == 206   # full data still stored for the engine
+
+
+# ---- spreads, vol regime, EV, sizing, events, execution window -----------------------
+
+def set_cfg(session, **kw):
+    session.cfg = session.vols.cfg = session.learner.cfg = dataclasses.replace(session.cfg, **kw)
+
+from ponytail import sizing as sz  # noqa: E402
+
+SHORT_ID = "99999999-8888-7777-6666-555555555555"
+
+
+def add_short_leg(s, bid=0.60, ask=0.66, delta=0.25):
+    s.market.ingest("get_option_instruments", {}, instruments_resp(oid=SHORT_ID))
+    s.market.instruments[SHORT_ID]["strike"] = 790.0
+    s.market.ingest("get_option_quotes", {}, quotes_resp(bid=bid, ask=ask, delta=delta, oid=SHORT_ID))
+
+
+def spread_order(effect="open", price="0.95", **kw):
+    legs = ([{"option_id": OID, "side": "buy", "position_effect": "open"},
+             {"option_id": SHORT_ID, "side": "sell", "position_effect": "open"}] if effect == "open" else
+            [{"option_id": OID, "side": "sell", "position_effect": "close"},
+             {"option_id": SHORT_ID, "side": "buy", "position_effect": "close"}])
+    o = {"account_number": ACCT, "quantity": "1", "price": price, "type": "limit", "legs": legs,
+         "direction": "debit" if effect == "open" else "credit"}
+    o.update(kw)
+    return o
+
+
+def test_debit_spread_paper_round_trip(session):
+    set_cfg(session, paper_capital=5000)                      # $95 max loss fits a 3% risk budget
+    add_short_leg(session)
+    res = session.propose_option_trade(OID, 1, 0.95, "spread", short_option_id=SHORT_ID)
+    assert res["approved"], res
+    assert res["order"]["direction"] == "debit" and len(res["order"]["legs"]) == 2
+    assert "PAPER MODE" in reason(pre(session, RH + "place_option_order", res["order"]))
+    pos = session.state.positions[OID]
+    assert pos["kind"] == "spread" and pos["width"] == 10 and pos["entry_price"] == 0.95
+    # Defined risk: no stop required, and stop orders on spreads are refused.
+    assert protect.unprotected(session.state, session.market, TODAY) == []
+    assert "single-leg" in reason(pre(session, RH + "place_option_order", stop()))
+    assert session.review_positions()["positions"][0]["action"] == "HOLD"
+    # Long leg rallies: spread mark 2.65 - 1.05 = 1.60 (+68%) -> take profit with a 2-leg credit close.
+    session.market.ingest("get_option_quotes", {}, quotes_resp(bid=2.60, ask=2.70))
+    session.market.ingest("get_option_quotes", {}, quotes_resp(bid=1.00, ask=1.10, oid=SHORT_ID))
+    row = session.review_positions()["positions"][0]
+    assert row["action"] == "CLOSE" and row["close_order"]["direction"] == "credit"
+    assert row["close_order"]["price"] == "1.55"          # halfway between natural (1.50) and mark (1.60)
+    assert "PAPER MODE" in reason(pre(session, RH + "place_option_order", row["close_order"]))
+    assert session.state.trade_log[-1]["pnl"] == pytest.approx(60.0) and session.state.trade_log[-1]["kind"] == "spread"
+
+
+@pytest.mark.parametrize("short_kw, price, why", [
+    ({"delta": 0.25}, 1.20, "outside the leg markets"),
+    ({"bid": 0.05, "ask": 0.08, "delta": 0.25}, 1.48, "spread"),   # short leg's own market too wide
+])
+def test_spread_shape_rules(session, short_kw, price, why):
+    set_cfg(session, paper_capital=5000)
+    add_short_leg(session, **short_kw)
+    res = session.propose_option_trade(OID, 1, price, "t", short_option_id=SHORT_ID)
+    assert not res["approved"] and any(why in p for p in res["problems"]), res
+
+
+def test_spread_must_be_further_otm(session):
+    add_short_leg(session)
+    session.market.instruments[SHORT_ID]["strike"] = 770.0   # in the money vs the 780 long call
+    res = session.propose_option_trade(OID, 1, 0.95, "t", short_option_id=SHORT_ID)
+    assert any("further out of the money" in p for p in res["problems"])
+
+
+def test_expensive_iv_requires_a_spread(session):
+    set_cfg(session, iv_rv_expensive=1.4, paper_capital=5000)
+    session.market.quotes[OID]["iv"] = 0.60                  # vs ~10-15% realized vol on SPY
+    res = session.propose_option_trade(OID, 1, 1.55, "t")
+    assert any("use a debit spread" in p for p in res["problems"]), res
+    add_short_leg(session)
+    session.market.quotes[SHORT_ID]["iv"] = 0.60
+    assert session.propose_option_trade(OID, 1, 0.95, "t", short_option_id=SHORT_ID)["approved"]
+
+
+def test_ev_gate_and_contract_ranking(session):
+    # Realistic SPY pricing: ATM 43-DTE call at 28% IV (~$30) while SPY realizes ~10%.
+    set_cfg(session, min_contract_ev=0.0, paper_capital=1e6, max_premium_per_trade=1e6, max_total_premium=1e6)
+    session.market.ingest("get_option_quotes", {}, quotes_resp(bid=30.0, ask=30.4, delta=0.50))
+    session.market.quotes[OID]["iv"] = 0.28
+    add_short_leg(session, bid=25.4, ask=25.8, delta=0.30)
+    session.market.quotes[SHORT_ID]["iv"] = 0.28
+    # No learned edge: paying 28% vol for a stock that moves 10% loses on decay.
+    res = session.propose_option_trade(OID, 1, 30.2, "t")
+    assert any("expected value" in p for p in res["problems"]), res
+    # A strong measured edge pays for the premium.
+    session.signals["SPY"]["p_win"] = 0.85
+    assert session.propose_option_trade(OID, 1, 30.2, "t")["approved"]
+    ranked = session.rank_contracts("SPY", "any")
+    assert {c["structure"] for c in ranked["candidates"]} == {"long", "debit_spread"}
+    evs = [c["ev_per_dollar"] for c in ranked["candidates"]]
+    assert evs == sorted(evs, reverse=True)
+    assert all("max_contracts" in c and "breakeven" in c and "theta_per_day" in c for c in ranked["candidates"])
+
+
+def test_kelly_sizing(cfg):
+    base = sz.max_contracts(cfg, 3000, {"bucket_trades": 0}, 1.55, False)
+    assert base[0] == 1 and base[1]["risk_pct"] == 3.0         # 3% of 3000 = $90 vs ~$70 risk per contract
+    edge = {"bucket_trades": 12, "p_win": 0.6, "avg_win_r": 0.8, "avg_loss_r": -0.4}
+    frac, why = sz.risk_fraction(cfg, edge)                    # full Kelly 0.6 - 0.4/2 = 40%, quarter = 10%, cap 6%
+    assert frac == pytest.approx(0.06) and "Kelly" in why
+    no_edge = {"bucket_trades": 12, "p_win": 0.4, "avg_win_r": 0.5, "avg_loss_r": -0.5}
+    assert sz.max_contracts(cfg, 100000, no_edge, 1.55, False)[0] == 0
+    assert sz.risk_per_contract(cfg, 0.95, True) == pytest.approx(95.0)  # spread: full debit is the risk
+
+
+def test_size_gate_rejects_oversized_orders(session):
+    session.cfg = dataclasses.replace(session.cfg, paper_capital=500)
+    res = session.propose_option_trade(OID, 1, 1.55, "t")
+    assert any("risk budget" in p for p in res["problems"]), res
+
+
+def test_macro_event_blackout_and_entry_window(session, tmp_path):
+    session.macro_events = [{"date": "2026-10-09", "kind": "FOMC", "name": "FOMC decision"}]
+    res = session.propose_option_trade(OID, 1, 1.55, "t")
+    assert any("macro blackout: FOMC" in p for p in res["problems"])
+    session.macro_events = []
+    session.clock = lambda: datetime(2026, 10, 8, 9, 35, tzinfo=ZoneInfo("America/New_York"))
+    res = session.propose_option_trade(OID, 1, 1.55, "t")
+    assert any("entry window" in p for p in res["problems"])
+
+
+def test_calendar_staleness_warning():
+    from ponytail import events as ev
+    evs = [{"date": "2026-10-28", "kind": "FOMC", "name": "FOMC"}]
+    assert any("CPI" in w for w in ev.calendar_warnings(evs, TODAY))
+    assert ev.calendar_warnings(evs + [{"date": "2026-10-14", "kind": "CPI", "name": "CPI"}], TODAY) == []
+
+
+def test_time_stop_closes_stalled_trades(session):
+    open_paper(session)
+    pre(session, RH + "place_option_order", stop())
+    session.state.positions[OID]["opened_at"] = (datetime.now(timezone.utc) - timedelta(days=12)).isoformat()
+    row = session.review_positions()["positions"][0]
+    assert row["action"] == "CLOSE" and "time stop" in row["reason"]
+
+
+def test_scanner_discoveries_join_the_universe(session):
+    session.market.ingest("preview_scan", {}, mcp({"data": {"result": {"results": [
+        {"ticker": "MU", "columns": {"Last": "1089.5", "Options volume": "2341926", "Relative options volume": "4.6"}},
+        {"ticker": "PENNY", "columns": {"Last": "4.6", "Options volume": "35376", "Relative options volume": "9.9"}},
+        {"ticker": "SPY", "columns": {"Last": "777", "Options volume": "9000000", "Relative options volume": "1.6"}}]}}}))
+    assert session.discovered == ["MU"]                       # sub-$10 names and core symbols excluded
+    assert session.universe == ["SPY", "QQQ", "MU"]

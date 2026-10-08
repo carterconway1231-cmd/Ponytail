@@ -62,6 +62,9 @@ class MarketCache:
         self.earnings = {}     # symbol -> [YYYY-MM-DD] report dates (empty list = looked up, none)
         self.broker_positions = None  # option_id -> quantity, once get_option_positions is seen
         self.orders = {}       # order_id -> normalized option order (fills, stops, cancels)
+        self.scan = None       # [{symbol, options_volume, rel_options_volume, ...}] from the last preview_scan
+        self.equity = None     # account value from get_portfolio
+        self.index_ids = {}    # index symbol -> instrument id (get_indexes)
 
     def ingest(self, tool, tool_input, resp):
         payload = decode_tool_response(resp)
@@ -77,6 +80,33 @@ class MarketCache:
             bars = [b for b in result.get("bars", []) if not b.get("interpolated") and b.get("close_price")]
             if bars:
                 self.bars.setdefault(result["symbol"].upper(), {})[result.get("interval") or "day"] = bars
+
+    def _ingest_get_index_historicals(self, data, tool_input):
+        ids = {v: k for k, v in self.index_ids.items()}
+        for r in data.get("results", []):
+            symbol = (r.get("symbol") or ids.get(r.get("instrument_id")) or "").upper()
+            bars = [{"begins_at": b["begins_at"], "open_price": b["open_value"], "high_price": b["high_value"],
+                     "low_price": b["low_value"], "close_price": b["close_value"], "volume": 0}
+                    for b in r.get("bars", []) if not b.get("interpolated") and b.get("close_value")]
+            if symbol and bars:
+                self.bars.setdefault(symbol, {})[r.get("interval") or "day"] = bars
+
+    def _ingest_get_indexes(self, data, tool_input):
+        for i in data.get("indexes", []):
+            self.index_ids[i["symbol"].upper()] = i["id"]
+
+    def _ingest_preview_scan(self, data, tool_input):
+        rows = []
+        for r in (data.get("result") or {}).get("results", []):
+            c = r.get("columns") or {}
+            rows.append({"symbol": r.get("ticker"), "last": _f(c.get("Last")),
+                         "options_volume": _f(c.get("Options volume")),
+                         "rel_options_volume": _f(c.get("Relative options volume")),
+                         "market_cap": _f(c.get("Market cap"))})
+        self.scan = [r for r in rows if r["symbol"]]
+
+    def _ingest_get_portfolio(self, data, tool_input):
+        self.equity = _f(data.get("total_value"))
 
     def _ingest_get_option_instruments(self, data, tool_input):
         for inst in data.get("instruments", []):
@@ -104,6 +134,7 @@ class MarketCache:
                 "iv": _f(q.get("implied_volatility")),
                 "open_interest": int(q.get("open_interest") or 0),
                 "updated_at": q.get("updated_at"),
+                "volume": int(q.get("volume") or 0),
             }
 
     def _ingest_get_earnings_results(self, data, tool_input):
@@ -150,14 +181,18 @@ class MarketCache:
         data = (payload or {}).get("data")
         if not isinstance(data, dict):
             return None
-        if tool == "get_equity_historicals":
+        if tool == "preview_scan" and self.scan is not None:
+            top = sorted(self.scan, key=lambda r: -(r["rel_options_volume"] or 0))[:15]
+            return json.dumps({"candidates": top, "total": len(self.scan)}, separators=(",", ":"))
+        if tool in ("get_equity_historicals", "get_index_historicals"):
             lines = []
             for r in data.get("results", []):
                 bars = [b for b in r.get("bars", []) if not b.get("interpolated")]
                 if bars:
-                    lines.append(f"{r['symbol']} {r.get('interval')}: {len(bars)} bars "
+                    last = bars[-1].get("close_price") or bars[-1].get("close_value")
+                    lines.append(f"{r.get('symbol')} {r.get('interval')}: {len(bars)} bars "
                                  f"{bars[0]['begins_at'][:10]}..{bars[-1]['begins_at'][:10]}, "
-                                 f"last close {float(bars[-1]['close_price']):.2f}")
+                                 f"last close {float(last):.2f}")
                 else:
                     lines.append(f"{r.get('symbol')} {r.get('interval')}: no real bars (gap-fill only)")
             missing = data.get("not_found")

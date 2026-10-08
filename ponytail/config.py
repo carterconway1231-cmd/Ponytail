@@ -68,6 +68,51 @@ class Config:
     shadow_weight: float = 0.3         # how much an untraded signal's outcome teaches vs a real trade
     shadow_horizon: int = 5            # trading days until an untraded signal is graded
 
+    # Volatility & structure
+    allow_spreads: bool = True         # debit verticals when IV is expensive (needs options level 3)
+    iv_rank_expensive: float = 60.0
+    iv_rank_cheap: float = 30.0
+    iv_rv_expensive: float = 1.4       # fallback gauge until IV rank has history
+    max_spread_debit_pct: float = 0.60 # debit must be <= this fraction of the strike width
+
+    # Contract selection by expected value
+    min_contract_ev: float = 0.0       # scenario EV per $ of premium must exceed this
+    ev_hold_days: int = 5              # holding horizon the EV model prices
+    entry_slippage_pct: float = 0.25   # expected fill: mid + this fraction of half-spread
+
+    # Position sizing (fraction of account equity at risk per trade)
+    paper_capital: float = 3000.0      # paper-mode equity baseline (set to what you plan to fund)
+    base_risk_pct: float = 0.03        # before the learner has evidence
+    kelly_fraction: float = 0.25
+    max_risk_pct: float = 0.06
+    stop_gap_allowance: float = 1.3    # risk of a stopped single = premium * stop_loss_pct * this
+
+    # Exit learning
+    time_stop_days: int = 10           # close stalled trades after this many days...
+    time_stop_min_gain: float = 0.10   # ...unless up at least this much
+    adaptive_exits: bool = True
+    min_exit_samples: int = 15
+
+    # Universe discovery, events, execution
+    discover: bool = True              # add scanner candidates to SYMBOLS each run
+    max_discovered: int = 5
+    events_path: str = "events.json"
+    event_blackout_days: int = 1       # no new entries this many days before FOMC/CPI
+    entry_window: tuple = ("09:45", "15:45")  # US/Eastern; no entries outside
+
+    # Go-live gate (paper results required before LIVE_TRADING is honored)
+    min_paper_trades: int = 30
+    min_paper_days: int = 20
+    min_profit_factor: float = 1.2
+    max_drawdown_pct: float = 0.25
+    force_live: bool = False
+
+    # Cost control & alerts
+    monitor_model: str = "claude-haiku-5-5"
+    monitor_effort: str = "low"
+    monitor_budget_usd: float = 0.30
+    alert_webhook_url: str = ""
+
     # Agent runtime
     model: str = "claude-opus-5-5"
     effort: str = "high"
@@ -117,6 +162,37 @@ class Config:
             warm_start_weight=_float("WARM_START_WEIGHT", 0.3),
             shadow_weight=_float("SHADOW_WEIGHT", 0.3),
             shadow_horizon=_int("SHADOW_HORIZON", 5),
+            allow_spreads=_bool("ALLOW_SPREADS", True),
+            iv_rank_expensive=_float("IV_RANK_EXPENSIVE", 60),
+            iv_rank_cheap=_float("IV_RANK_CHEAP", 30),
+            iv_rv_expensive=_float("IV_RV_EXPENSIVE", 1.4),
+            max_spread_debit_pct=_float("MAX_SPREAD_DEBIT_PCT", 0.60),
+            min_contract_ev=_float("MIN_CONTRACT_EV", 0.0),
+            ev_hold_days=_int("EV_HOLD_DAYS", 5),
+            entry_slippage_pct=_float("ENTRY_SLIPPAGE_PCT", 0.25),
+            paper_capital=_float("PAPER_CAPITAL", 3000),
+            base_risk_pct=_float("BASE_RISK_PCT", 0.03),
+            kelly_fraction=_float("KELLY_FRACTION", 0.25),
+            max_risk_pct=_float("MAX_RISK_PCT", 0.06),
+            stop_gap_allowance=_float("STOP_GAP_ALLOWANCE", 1.3),
+            time_stop_days=_int("TIME_STOP_DAYS", 10),
+            time_stop_min_gain=_float("TIME_STOP_MIN_GAIN", 0.10),
+            adaptive_exits=_bool("ADAPTIVE_EXITS", True),
+            min_exit_samples=_int("MIN_EXIT_SAMPLES", 15),
+            discover=_bool("DISCOVER", True),
+            max_discovered=_int("MAX_DISCOVERED", 5),
+            events_path=os.environ.get("EVENTS_PATH", "events.json"),
+            event_blackout_days=_int("EVENT_BLACKOUT_DAYS", 1),
+            entry_window=tuple(os.environ.get("ENTRY_WINDOW", "09:45-15:45").split("-")),
+            min_paper_trades=_int("MIN_PAPER_TRADES", 30),
+            min_paper_days=_int("MIN_PAPER_DAYS", 20),
+            min_profit_factor=_float("MIN_PROFIT_FACTOR", 1.2),
+            max_drawdown_pct=_float("MAX_DRAWDOWN_PCT", 0.25),
+            force_live=_bool("FORCE_LIVE", False),
+            monitor_model=os.environ.get("MONITOR_MODEL", "claude-haiku-5-5"),
+            monitor_effort=os.environ.get("MONITOR_EFFORT", "low"),
+            monitor_budget_usd=_float("MONITOR_BUDGET_USD", 0.30),
+            alert_webhook_url=os.environ.get("ALERT_WEBHOOK_URL", "").strip(),
             model=os.environ.get("AGENT_MODEL", "claude-opus-5-5"),
             effort=os.environ.get("AGENT_EFFORT", "high"),
             max_turns=_int("AGENT_MAX_TURNS", 80),
