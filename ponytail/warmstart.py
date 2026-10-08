@@ -26,6 +26,8 @@ from .factors import MIN_DAILY_BARS, MIN_HOURLY_BARS, compute_factors
 DAILY_WINDOW = 300   # daily bars handed to the factor engine per replay day
 HOURLY_WINDOW = 210  # ~30 sessions of hourly bars, as in live runs
 MIN_HISTORY = 120    # first replay day needs this many daily bars behind it
+CONTEXT_SYMBOLS = ("SPY", "VIX")
+INDEX_SYMBOLS = {"VIX", "SPX", "NDX", "DJI", "RUT"}
 
 
 def _real(bars):
@@ -41,7 +43,10 @@ def replay(learner, bars_by_symbol, horizon=None, weight=None):
 
     events = []
     series = {}
+    context = {k: _real((bars_by_symbol.get(k) or {}).get("day")) for k in CONTEXT_SYMBOLS}
     for sym, bars in bars_by_symbol.items():
+        if sym in INDEX_SYMBOLS:
+            continue  # context only (VIX has no volume and isn't tradable)
         daily = _real(bars.get("day"))
         hourly = _real(bars.get("hour"))
         if len(daily) < MIN_HISTORY + horizon:
@@ -68,24 +73,24 @@ def replay(learner, bars_by_symbol, horizon=None, weight=None):
             hslice = None
         if len(dslice) < MIN_DAILY_BARS:
             continue
-        analysis = compute_factors(dslice, hslice)
+        analysis = compute_factors(dslice, hslice, context)
         hourly_days += bool(analysis["has_hourly"])
         outcome_day = days[t + horizon]
-        move = (float(daily[t + horizon]["close_price"]) - analysis["close"]) / analysis["atr"]
-        if abs(move) < 0.5:
-            skipped_flat += 1  # no meaningful move: nothing to learn
-        else:
-            up = 1 if move > 0 else -1
-            regime = analysis["regime"]
-            learner._grade(analysis["factors"], regime, up, weight, outcome_day)
-            decision = learner.decide(analysis["factors"], regime)
-            if decision["decision"] in ("BUY", "SELL"):
-                learner._calibrate(decision["conviction"], (up > 0) == (decision["decision"] == "BUY"), weight, outcome_day)
-            for name, f in analysis["factors"].items():
-                if abs(f["score"]) >= 0.1:
-                    tally = raw.setdefault(name, {}).setdefault(regime, [0, 0])
-                    tally[0 if (f["score"] > 0) == (up > 0) else 1] += 1
+        outcome_close = float(daily[t + horizon]["close_price"])
+        regime = analysis["regime"]
+        decision = learner.decide(analysis["factors"], regime)
+        if learner.grade_outcome(analysis["factors"], regime, decision["decision"], decision["conviction"],
+                                 analysis["close"], outcome_close, analysis["atr"], analysis["drift_per_day"],
+                                 weight, outcome_day):
+            excess = outcome_close - analysis["close"] - analysis["drift_per_day"] * horizon
+            if abs(excess) >= 0.5 * analysis["atr"]:
+                for name, f in analysis["factors"].items():
+                    if abs(f["score"]) >= 0.1:
+                        tally = raw.setdefault(name, {}).setdefault(regime, [0, 0])
+                        tally[0 if (f["score"] > 0) == (excess > 0) else 1] += 1
             graded += 1
+        else:
+            skipped_flat += 1  # no meaningful move beyond the trend: nothing to learn
         done[sym] = max(done.get(sym, ""), day)
 
     learner.d["warm_start"]["samples"] += graded

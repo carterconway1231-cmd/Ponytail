@@ -8,6 +8,7 @@ order-flow reads used for entry timing.
   Order flow*   order_flow (CVD from close location in range), vwap
   ICT           structure (BOS/CHoCH), liquidity_sweep, fvg, order_block,
                 ote (62-79% retracement), premium_discount
+  Context       market_trend (SPY), vix (fear gauge), relative_strength vs SPY
 
 * Robinhood exposes bars, not the tape, so order flow is estimated from where
   each bar closes within its range, weighted by volume. It is a proxy for
@@ -26,7 +27,11 @@ SWING_N = 2  # pivot needs this many bars on each side
 
 def bars_to_df(bars):
     df = pd.DataFrame(bars)
-    df = df.rename(columns={"open_price": "o", "high_price": "h", "low_price": "l", "close_price": "c", "volume": "v"})
+    # Equity bars use *_price; index bars (VIX, SPX) use *_value and carry no volume.
+    df = df.rename(columns={"open_price": "o", "high_price": "h", "low_price": "l", "close_price": "c", "volume": "v",
+                            "open_value": "o", "high_value": "h", "low_value": "l", "close_value": "c"})
+    if "v" not in df:
+        df["v"] = 0.0
     for col in "ohlcv":
         df[col] = df[col].astype(float)
     return df.reset_index(drop=True)
@@ -301,14 +306,50 @@ def f_ote(hdf):
     return (bias * s) or 0.0, f"{r:.0%} retracement of {'bullish' if bias > 0 else 'bearish'} leg {lo:.2f}-{hi:.2f} ({zone})"
 
 
+# ---- market context (daily, needs SPY / VIX bars aligned to the same date) -----------
+
+def f_market_trend(spy):
+    c = spy.c
+    ret20 = c.iloc[-1] / c.iloc[-21] - 1
+    s = (0.5 if c.iloc[-1] > ema(c, 50).iloc[-1] else -0.5) + _clip(ret20 / 0.05, -0.5, 0.5)
+    return _clip(s), f"SPY {'above' if c.iloc[-1] > ema(c, 50).iloc[-1] else 'below'} EMA50, {ret20:+.1%} over 20d"
+
+
+def f_vix(vix):
+    v = vix.c
+    level, ma20, prior = v.iloc[-1], v.iloc[-20:].mean(), v.iloc[-6]
+    if level > 30 and level < prior:
+        return 1.0, f"VIX {level:.1f} high but falling from {prior:.1f} (fear unwinding)"
+    s = _clip(-(level / ma20 - 1) * 3)
+    return s, f"VIX {level:.1f} vs 20d avg {ma20:.1f} ({'rising fear' if s < 0 else 'calming'})"
+
+
+def f_relative_strength(d, spy):
+    ret = d.c.iloc[-1] / d.c.iloc[-21] - 1
+    spy_ret = spy.c.iloc[-1] / spy.c.iloc[-21] - 1
+    diff = ret - spy_ret
+    return _clip(diff / 0.05), f"{ret:+.1%} vs SPY {spy_ret:+.1%} over 20d ({diff:+.1%} relative)"
+
+
+def _aligned(bars, last_day, min_len=25):
+    """Context bars up to and including the symbol's last bar date (no lookahead)."""
+    if not bars:
+        return None
+    upto = [b for b in bars if b["begins_at"][:10] <= last_day]
+    return bars_to_df(upto) if len(upto) >= min_len else None
+
+
 DAILY_FACTORS = {"trend": f_trend, "macd": f_macd, "rsi": f_rsi, "adx": f_adx,
                  "volume_thrust": f_volume_thrust, "premium_discount": f_premium_discount}
 HOURLY_FACTORS = {"order_flow": f_order_flow, "vwap": f_vwap, "structure": f_structure,
                   "liquidity_sweep": f_liquidity_sweep, "fvg": f_fvg, "order_block": f_order_block, "ote": f_ote}
-ALL_FACTORS = list(DAILY_FACTORS) + list(HOURLY_FACTORS)
+CONTEXT_FACTORS = ("market_trend", "vix", "relative_strength")
+ALL_FACTORS = list(DAILY_FACTORS) + list(HOURLY_FACTORS) + list(CONTEXT_FACTORS)
 
 
-def compute_factors(daily_bars, hourly_bars=None):
+def compute_factors(daily_bars, hourly_bars=None, context=None):
+    """context: optional {"SPY": daily bars, "VIX": daily bars}; trimmed to the
+    symbol's last daily date so replays never see the future."""
     d = bars_to_df(daily_bars)
     if len(d) < MIN_DAILY_BARS:
         raise ValueError(f"need at least {MIN_DAILY_BARS} daily bars, got {len(d)}")
@@ -321,7 +362,17 @@ def compute_factors(daily_bars, hourly_bars=None):
         for name, fn in HOURLY_FACTORS.items():
             s, why = fn(h)
             out[name] = {"score": round(s, 3), "why": why, "tf": "1h"}
+    last_day = daily_bars[-1]["begins_at"][:10]
+    spy = _aligned((context or {}).get("SPY"), last_day)
+    vix = _aligned((context or {}).get("VIX"), last_day)
+    if spy is not None:
+        for name, (s, why) in (("market_trend", f_market_trend(spy)), ("relative_strength", f_relative_strength(d, spy))):
+            out[name] = {"score": round(s, 3), "why": why, "tf": "1D"}
+    if vix is not None:
+        s, why = f_vix(vix)
+        out["vix"] = {"score": round(s, 3), "why": why, "tf": "1D"}
     a_val = float(adx(d)[0].iloc[-1])
+    drift = float((d.c.iloc[-1] - d.c.iloc[-61]) / 60) if len(d) > 61 else 0.0
     return {
         "factors": out,
         "regime": "trend" if a_val >= 25 else "range",
@@ -329,4 +380,5 @@ def compute_factors(daily_bars, hourly_bars=None):
         "atr": float(atr(d).iloc[-1]),
         "close": float(d.c.iloc[-1]),
         "has_hourly": bool(hourly_bars and len(hourly_bars) >= MIN_HOURLY_BARS),
+        "drift_per_day": drift,  # trailing 60-day trend, used to grade factors on excess moves
     }

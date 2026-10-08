@@ -11,6 +11,7 @@ Division of labor:
   * Code (risk.py, enforced in PreToolUse hooks) has the final say on every
     order. A denied tool call never reaches Robinhood.
 """
+import dataclasses
 import json
 import logging
 from datetime import date, datetime, timedelta, timezone
@@ -21,7 +22,7 @@ from claude_agent_sdk import (
     create_sdk_mcp_server, query, tool,
 )
 
-from . import events as macro, protect, risk, selection, sizing
+from . import alerts, events as macro, exits, performance, protect, risk, selection, sizing
 from .factors import compute_factors
 from .learner import Learner
 from .market import MarketCache, decode_tool_response
@@ -45,7 +46,9 @@ RH_READ_TOOLS = {
 }
 RH_WRITE_TOOLS = {"review_option_order", "place_option_order", "cancel_option_order"}
 LOCAL_TOOLS = {"compute_signals", "rank_contracts", "propose_option_trade", "review_positions", "portfolio_status",
-               "learning_report", "warm_start"}
+               "learning_report", "warm_start", "performance_report"}
+
+MONITOR_BLOCKED = {LOCAL + t for t in ("compute_signals", "rank_contracts", "propose_option_trade", "warm_start")}
 
 ALLOWED_TOOLS = (
     {RH + t for t in RH_READ_TOOLS | RH_WRITE_TOOLS}
@@ -72,6 +75,11 @@ class TradingSession:
         self.monitor = monitor  # cheap position-management run: no new entries
         self.clock = clock or (lambda: datetime.now(ET))
         self.state = State.load(cfg.state_path)
+        if cfg.adaptive_exits:
+            learned = exits.tune(cfg, self.state)
+            if learned:
+                cfg = self.cfg = dataclasses.replace(cfg, take_profit_pct=learned["take_profit_pct"],
+                                                     stop_loss_pct=learned["stop_loss_pct"])
         self.learner = self.state.learner = Learner(self.state.data["learner"], cfg, today=self.today)
         self.vols = VolBook(self.state.data.setdefault("iv_history", {}), cfg)
         self.macro_events = macro.load_events(cfg.events_path)
@@ -80,6 +88,8 @@ class TradingSession:
         self.plans = {}    # option_id -> approved open plan
         self.events = []   # audit trail of guardrail decisions this run
         self.cancelable = set()  # order ids review_positions cleared for cancellation
+        self.exit_reasons = {}   # option_id -> why review_positions said CLOSE (for the trade log)
+        self.breaker_alerted = False
 
     @property
     def mode(self):
@@ -120,6 +130,8 @@ class TradingSession:
         event = {"at": now_iso(), "kind": kind, **fields}
         self.events.append(event)
         log.info("%s %s", kind, json.dumps(fields, default=str))
+        if kind in alerts.ALERT_KINDS:
+            alerts.send(self.cfg.alert_webhook_url, alerts.format_event(kind, fields, self.mode))
 
     # ---- deterministic tools exposed to Claude -------------------------
 
@@ -130,7 +142,8 @@ class TradingSession:
         if not daily:
             return {"error": f"no daily bars for {symbol}; call get_equity_historicals with interval='day' first"}
         try:
-            analysis = compute_factors(daily, bars.get("hour"))
+            context = {k: self.market.bars.get(k, {}).get("day") for k in ("SPY", "VIX")}
+            analysis = compute_factors(daily, bars.get("hour"), context)
         except ValueError as e:
             return {"error": f"{e}; request a longer start_time"}
         labeled = self.learner.label_snapshots(symbol, daily)
@@ -237,13 +250,17 @@ class TradingSession:
         for e in events:
             self.audit(e["kind"], **{k: v for k, v in e.items() if k != "kind"})
         rows = risk.review_exits(self.cfg, self.state, self.market, self.signals, self.today)
+        self.exit_reasons.update({r["option_id"]: r["reason"] for r in rows if r["action"] == "CLOSE"})
         # Cancelling a live stop is only allowed to exit or to ratchet it higher.
         self.cancelable = {r["cancel_stop_first"] for r in rows if r.get("cancel_stop_first")}
         self.cancelable |= {p["open_order_id"] for p in self.state.positions.values()
                             if p["mode"] == "live" and p.get("open_order_id") and not p.get("filled")}
         self.state.save()
-        return {"mode": self.mode, "broker_events": events, "positions": rows,
-                "circuit_breakers": risk.circuit_breakers(self.cfg, self.state, self.market, self.today)}
+        breakers = risk.circuit_breakers(self.cfg, self.state, self.market, self.today)
+        if breakers and not self.breaker_alerted:
+            self.breaker_alerted = True
+            self.audit("circuit_breaker", tripped=breakers)
+        return {"mode": self.mode, "broker_events": events, "positions": rows, "circuit_breakers": breakers}
 
     def needs_warm_start(self):
         return [sym for sym in self.cfg.symbols if sym not in self.learner.d["warm_start"]["symbols"]]
@@ -260,6 +277,12 @@ class TradingSession:
                 "learned_weights": [{k: r[k] for k in ("factor", "hit_rate_trend", "hit_rate_range",
                                                        "weight_trend", "weight_range")} for r in top]}
 
+    def performance(self):
+        capital = self.cfg.paper_capital if not self.cfg.live_trading else (self.market.equity or self.cfg.paper_capital)
+        spy = self.market.bars.get("SPY", {}).get("day")
+        return {"report": performance.report(self.state, capital, mode=self.mode, spy_bars=spy),
+                "go_live": performance.go_live_check(self.cfg, self.state, self.today)}
+
     def portfolio_status(self):
         day = self.today.isoformat()
         log_ = self.state.trade_log
@@ -272,6 +295,11 @@ class TradingSession:
             "realized_pnl_today": round(self.state.realized_pnl_on(day), 2),
             "realized_pnl_all_time": round(sum(t["pnl"] for t in log_), 2), "closed_trades": len(log_),
             "circuit_breakers": risk.circuit_breakers(self.cfg, self.state, self.market, self.today),
+            "equity": self.equity(), "universe": self.universe, "discovered": self.discovered,
+            "entry_window_open": self.entry_window_open(),
+            "upcoming_events": macro.blackout(self.macro_events, self.today, 14),
+            "event_calendar_warnings": macro.calendar_warnings(self.macro_events, self.today),
+            "performance": self.performance(),
             "limits": {k: getattr(self.cfg, k) for k in (
                 "max_premium_per_trade", "max_total_premium", "max_open_positions", "max_daily_loss",
                 "max_weekly_loss", "max_consecutive_losses", "loss_cooldown_days",
@@ -288,6 +316,8 @@ class TradingSession:
             self.audit("tool_blocked", tool=name)
             return _deny(f"{name} is not permitted for this agent")
         args = input_data.get("tool_input") or {}
+        if self.monitor and name in MONITOR_BLOCKED:
+            return _deny("monitor run: manage existing positions only; signals and entries run on full cycles")
 
         if name in (RH + "review_option_order", RH + "cancel_option_order", RH + "get_option_positions",
                     RH + "get_option_orders", RH + "get_portfolio"):
@@ -356,9 +386,13 @@ class TradingSession:
             if order:
                 self._record(order, mode="live", order_id=broker_order.get("id"), broker_response=data)
         elif short == "cancel_option_order":
-            for p in self.state.positions.values():
-                if p.get("stop") and p["stop"]["order_id"] == args.get("order_id"):
+            cancelled = args.get("order_id")
+            for oid, p in list(self.state.positions.items()):
+                if p.get("stop") and p["stop"]["order_id"] == cancelled:
                     p["stop"] = None
+                elif p.get("open_order_id") == cancelled and not p.get("filled"):
+                    # Unfilled entry pulled (e.g. to reprice): nothing was bought.
+                    self.state.drop_position(oid, "opening order cancelled before fill")
             self.state.save()
             self.audit("order_cancelled", order_id=args.get("order_id"))
         return {}
@@ -389,10 +423,11 @@ class TradingSession:
             # GFD close lapses and the position goes back to needing a stop.
             self.state.positions[oid]["pending_close"] = {
                 "order_id": order_id, "price": order["price"], "quantity": order["quantity"],
-                "placed_on": self.today.isoformat()}
+                "placed_on": self.today.isoformat(), "reason": self.exit_reasons.get(oid, "agent close")}
             self.audit("close_submitted", option_id=oid, order_id=order_id, price=order["price"])
         else:
-            pnl = self.state.close_position(oid, order["quantity"], order["price"], reason=f"{mode} close")
+            pnl = self.state.close_position(oid, order["quantity"], order["price"],
+                                            reason=self.exit_reasons.get(oid, "agent close"))
             self.audit("closed", mode=mode, option_id=oid, quantity=order["quantity"], price=order["price"],
                        pnl=round(pnl, 2), broker=broker_response)
         self.state.save()
@@ -444,21 +479,31 @@ class TradingSession:
             return _text(s.review_positions())
 
         @tool("learning_report", "What the agent has learned: each factor's measured hit rate and current "
-              "weight in trending vs ranging markets, and win rate / expected R by conviction level.", {})
+              "weight in trending vs ranging markets, win rate / expected R by conviction level, and the "
+              "exit levels tuned from trade outcomes.", {})
         async def learning_report(args):
-            return _text(s.learner.report())
+            return _text({**s.learner.report(), "exit_params": s.state.data.get("exit_params"),
+                          "active_exits": {"take_profit_pct": s.cfg.take_profit_pct,
+                                           "stop_loss_pct": s.cfg.stop_loss_pct}})
 
         @tool("warm_start", "Pre-train the factor learner by walk-forward replay of all long bar history fetched "
               "this run (no lookahead). Incremental: only days not replayed before are added.", {})
         async def warm_start(args):
             return _text(s.warm_start())
 
+        @tool("performance_report", "Scoreboard: win rate, expectancy, profit factor, drawdown, return vs SPY "
+              "buy-and-hold, results net of AI costs, breakdowns by structure / vol regime / exit reason, "
+              "and the go-live checklist.", {})
+        async def performance_report(args):
+            return _text(s.performance())
+
         @tool("portfolio_status", "Mode (paper/live), risk limits, ensemble weights, agent positions and P&L.", {})
         async def portfolio_status(args):
             return _text(s.portfolio_status())
 
         return create_sdk_mcp_server("ponytail", tools=[compute_signals, rank_contracts, propose_option_trade, review_positions,
-                                                       portfolio_status, learning_report, warm_start])
+                                                       portfolio_status, learning_report, warm_start,
+                                                       performance_report])
 
     def options(self):
         servers = {"ponytail": self.local_server()}
@@ -468,9 +513,9 @@ class TradingSession:
                 rh["headers"] = {"Authorization": f"Bearer {self.cfg.robinhood_mcp_token}"}
             servers["Robinhood"] = rh
         return ClaudeAgentOptions(
-            model=self.cfg.model,
-            effort=self.cfg.effort,
-            system_prompt=SYSTEM_PROMPT,
+            model=self.cfg.monitor_model if self.monitor else self.cfg.model,
+            effort=self.cfg.monitor_effort if self.monitor else self.cfg.effort,
+            system_prompt=SYSTEM_PROMPT + (MONITOR_PROMPT if self.monitor else ""),
             # No file/shell tools. ToolSearch only loads deferred MCP tool schemas
             # (and waits for still-connecting servers like the Robinhood connector).
             tools=["ToolSearch"],
@@ -481,10 +526,14 @@ class TradingSession:
                 "PostToolUse": [HookMatcher(matcher=None, hooks=[self.post_tool_use])],
             },
             max_turns=self.cfg.max_turns,
-            max_budget_usd=self.cfg.max_budget_usd,
+            max_budget_usd=self.cfg.monitor_budget_usd if self.monitor else self.cfg.max_budget_usd,
         )
 
     def kickoff(self):
+        if self.monitor:
+            return (f"MONITOR run. Date: {self.today.isoformat()}. Mode: {self.mode.upper()}. "
+                    f"Account: {self.cfg.account_number}. Do step 1 of the cycle only: protect and exit held "
+                    f"positions, then report in three lines or fewer. If nothing is held, say so and stop.")
         ago = lambda days: (self.today - timedelta(days=days)).isoformat() + "T00:00:00Z"  # noqa: E731
         need = self.needs_warm_start()
         warm = (f"\nWarm start needed for: {', '.join(need)}. Before computing signals, fetch long history "
@@ -499,6 +548,10 @@ class TradingSession:
             f"start_time='{ago(420)}', and interval='hour' with start_time='{ago(30)}'." + warm
         )
 
+
+MONITOR_PROMPT = """
+
+This is a MONITOR run on a small, cheap model: only protect and exit what is already held (step 1). Do not compute signals, rank contracts or open anything; those tools are disabled. Be brief."""
 
 SYSTEM_PROMPT = """You are Ponytail, an autonomous options trading agent operating a small Robinhood account through the Robinhood MCP tools. Each run is one trading cycle. No human reviews your trades before they are placed, so be deliberate, and when in doubt, don't trade.
 
@@ -548,9 +601,9 @@ Rules:
 """
 
 
-async def run_cycle(cfg, today=None):
-    session = TradingSession(cfg, today)
-    log.info("starting %s cycle for %s", session.mode, cfg.symbols)
+async def run_cycle(cfg, today=None, monitor=False):
+    session = TradingSession(cfg, today, monitor=monitor)
+    log.info("starting %s %s cycle for %s", session.mode, "monitor" if monitor else "full", cfg.symbols)
     result = None
     try:
         async for msg in query(prompt=session.kickoff(), options=session.options()):
@@ -563,12 +616,17 @@ async def run_cycle(cfg, today=None):
             elif isinstance(msg, ResultMessage):
                 result = msg
     finally:
+        cost = getattr(result, "total_cost_usd", None) or 0.0
+        day = datetime.now(timezone.utc).date().isoformat()
+        by_day = session.state.data.setdefault("ai_cost_by_day", {})
+        by_day[day] = round(by_day.get(day, 0.0) + cost, 4)
         session.state.data.setdefault("runs", []).append({
             "at": datetime.now(timezone.utc).isoformat(), "mode": session.mode,
-            "signals": session.signals, "events": session.events,
-            "cost_usd": getattr(result, "total_cost_usd", None),
-            "summary": getattr(result, "result", None),
+            "kind": "monitor" if monitor else "full", "signals": session.signals, "events": session.events,
+            "cost_usd": cost, "summary": getattr(result, "result", None),
         })
+        if result is None or result.is_error:
+            session.audit("run_failed", error=getattr(result, "result", None) or "no result")
         session.state.data["runs"] = session.state.data["runs"][-50:]
         session.state.save()
     if result is not None:

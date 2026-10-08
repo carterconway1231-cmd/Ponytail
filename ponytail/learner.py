@@ -186,9 +186,32 @@ class Learner:
         self._calibrate(entry.get("conviction", 0.0), won, 1.0, day, r)
         self.d["trades_learned"] += 1
 
+    def grade_outcome(self, factors, regime, decision, conviction, close, outcome_close, atr, drift, weight, day):
+        """Grade one untraded signal once its horizon has passed.
+
+        Factors are graded on the EXCESS move: price change minus the trailing
+        drift over the horizon, in ATRs. In a steady bull market every bullish
+        read "wins" on raw direction; grading against the drift asks whether a
+        factor added information beyond the trend. Calibration (would the
+        trade have won?) uses the raw move, because that's what options pay on.
+        Returns whether anything was graded."""
+        if not atr:
+            return False
+        move = (outcome_close - close) / atr
+        excess = (outcome_close - close - drift * self.cfg.shadow_horizon) / atr
+        graded = False
+        if abs(excess) >= 0.5:
+            self._grade(factors, regime, 1 if excess > 0 else -1, weight, day)
+            graded = True
+        if abs(move) >= 0.5 and decision in ("BUY", "SELL"):
+            self._calibrate(conviction, (move > 0) == (decision == "BUY"), weight, day)
+            graded = True
+        return graded
+
     def record_snapshot(self, symbol, day, analysis, decision):
         snaps = [s for s in self.d["snapshots"] if not (s["symbol"] == symbol and s["date"] == day)]
         snaps.append({"symbol": symbol, "date": day, "close": analysis["close"], "atr": analysis["atr"],
+                      "drift": analysis.get("drift_per_day", 0.0),
                       "regime": analysis["regime"], "conviction": decision["conviction"],
                       "decision": decision["decision"], "score": decision["score"],
                       "factors": {k: {"score": v["score"]} for k, v in analysis["factors"].items()}})
@@ -207,12 +230,8 @@ class Learner:
                 keep.append(s)  # horizon not reached yet
                 continue
             outcome_day, outcome_close = later[self.cfg.shadow_horizon - 1]
-            move = (outcome_close - s["close"]) / s["atr"] if s["atr"] else 0
-            if abs(move) >= 0.5:
-                self._grade(s["factors"], s["regime"], 1 if move > 0 else -1, self.cfg.shadow_weight, outcome_day)
-                if s["decision"] in ("BUY", "SELL"):
-                    won = (move > 0) == (s["decision"] == "BUY")
-                    self._calibrate(s["conviction"], won, self.cfg.shadow_weight, outcome_day)
+            if self.grade_outcome(s["factors"], s["regime"], s["decision"], s["conviction"], s["close"],
+                                  outcome_close, s["atr"], s.get("drift", 0.0), self.cfg.shadow_weight, outcome_day):
                 self.d["shadow_learned"] += 1
                 labeled += 1
         self.d["snapshots"] = keep

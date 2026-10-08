@@ -473,11 +473,37 @@ def drift(n, start=100.0, step=0.0, wiggle=0.3, v=1000):
     return rows
 
 
+def vix_bars():
+    return json.load(open(os.path.join(FIX, "vix_day.json")))
+
+
 def test_real_spy_data_produces_all_factors():
-    a = fx.compute_factors(real_bars("day"), real_bars("hour"))
+    a = fx.compute_factors(real_bars("day"), real_bars("hour"), {"SPY": real_bars("day"), "VIX": vix_bars()})
     assert set(a["factors"]) == set(fx.ALL_FACTORS)
+    assert fx.compute_factors(real_bars("day"))["factors"].keys() == fx.DAILY_FACTORS.keys()
     assert all(-1 <= f["score"] <= 1 and f["why"] for f in a["factors"].values())
     assert a["regime"] in ("trend", "range") and a["has_hourly"]
+
+
+def test_context_factors_never_see_the_future():
+    day = real_bars("day")
+    cut = day[:150]
+    with_future = fx.compute_factors(cut, None, {"SPY": day, "VIX": vix_bars()})
+    trimmed = fx.compute_factors(cut, None, {"SPY": cut, "VIX": [b for b in vix_bars()
+                                                               if b["begins_at"][:10] <= cut[-1]["begins_at"][:10]]})
+    for k in fx.CONTEXT_FACTORS:
+        assert with_future["factors"][k] == trimmed["factors"][k]
+
+
+def test_drift_adjusted_grading(cfg):
+    lr = Learner({}, cfg, today=TODAY)
+    f = {"trend": {"score": 1.0}}
+    # Price rose 1 ATR over 5 days, but the trailing drift alone predicted +2 ATR:
+    # the bullish factor added nothing beyond the trend, so it's graded wrong...
+    lr.grade_outcome(f, "trend", "BUY", 0.5, 100.0, 102.0, 2.0, drift=0.8, weight=1.0, day=TODAY)
+    assert lr.hit_rate("trend", "trend") < 0.5
+    # ...while the trade itself (raw move up) still counts as a win for calibration.
+    assert lr.d["calibration"]["medium"]["A"] > 0
 
 
 def test_daily_only_still_scores():
@@ -595,6 +621,10 @@ def test_compute_signals_end_to_end_on_real_bars(session):
     session.market.ingest("get_equity_historicals", {}, mcp({"data": {"results": [
         {"symbol": "SPY", "interval": "day", "bars": real_bars("day")},
         {"symbol": "SPY", "interval": "hour", "bars": real_bars("hour")}]}}))
+    # VIX arrives through the index tools, with *_value fields and no volume.
+    session.market.ingest("get_indexes", {}, mcp({"data": {"indexes": [{"id": "vix-id", "symbol": "VIX"}]}}))
+    session.market.ingest("get_index_historicals", {}, mcp({"data": {"results": [
+        {"instrument_id": "vix-id", "symbol": "VIX", "interval": "day", "bars": vix_bars()}]}}))
     out = session.compute_signals("SPY")
     assert out["decision"] in ("BUY", "SELL", "HOLD") and out["hourly_factors"] == "included"
     assert len(out["factors"]) == len(fx.ALL_FACTORS)
@@ -621,9 +651,9 @@ def test_warm_start_replays_without_lookahead(cfg, monkeypatch):
     seen = []
     real = warmstart.compute_factors
 
-    def spy(daily, hourly=None):
+    def spy(daily, hourly=None, context=None):
         seen.append((daily[-1]["begins_at"][:10], hourly[-1]["begins_at"][:10] if hourly else None))
-        return real(daily, hourly)
+        return real(daily, hourly, context)
 
     monkeypatch.setattr(warmstart, "compute_factors", spy)
     lr = Learner({}, cfg, today=TODAY)
@@ -815,3 +845,107 @@ def test_scanner_discoveries_join_the_universe(session):
         {"ticker": "SPY", "columns": {"Last": "777", "Options volume": "9000000", "Relative options volume": "1.6"}}]}}}))
     assert session.discovered == ["MU"]                       # sub-$10 names and core symbols excluded
     assert session.universe == ["SPY", "QQQ", "MU"]
+
+
+# ---- exit learning ---------------------------------------------------------------
+
+from ponytail import exits as ex  # noqa: E402
+from ponytail.state import State  # noqa: E402
+
+
+def test_exit_simulation_rules():
+    assert ex.simulate({"path": [0.1, -0.3, 0.8]}, tp=0.5, sl=0.25) == pytest.approx(-0.275)  # stop first, with slippage
+    assert ex.simulate({"path": [0.2, 0.6, -0.9]}, tp=0.5, sl=0.25) == 0.5
+    assert ex.simulate({"mfe": 0.7, "mae": -0.4, "r": 0.1}, tp=0.5, sl=0.35) == pytest.approx(-0.385)  # ambiguous -> stop
+    assert ex.simulate({"mfe": 0.7, "mae": -0.1, "r": 0.1}, tp=0.5, sl=0.35) == 0.5
+    assert ex.simulate({"mfe": 0.2, "mae": -0.1, "r": 0.15}, tp=0.5, sl=0.35) == 0.15
+
+
+def test_exit_tuner_adopts_better_levels_with_evidence(cfg, tmp_path):
+    st = State(str(tmp_path / "s.json"))
+    # Winners run to +100% after dipping -40%; losers keep falling. A 0.35 stop kills the winners,
+    # a 0.45 stop with a 1.0 target captures them.
+    st.data["exit_samples"] = ([{"path": [-0.4, 0.2, 0.6, 1.1]}] * 10 + [{"path": [-0.2, -0.5, -0.8]}] * 8)
+    learned = ex.tune(cfg, st)
+    assert learned["take_profit_pct"] == 1.0 and learned["stop_loss_pct"] == 0.45
+    assert learned["mean_r"] > learned["baseline_r"]
+    assert max(ex.SL_GRID) <= 0.5                     # learning can never remove loss protection
+    few = State(str(tmp_path / "t.json"))
+    few.data["exit_samples"] = st.data["exit_samples"][:5]
+    assert ex.tune(cfg, few) is None                  # not enough evidence: keep configured exits
+
+
+def test_session_applies_tuned_exits(cfg):
+    st = State(cfg.state_path)
+    st.data["exit_samples"] = ([{"path": [-0.4, 0.2, 0.6, 1.1]}] * 10 + [{"path": [-0.2, -0.5, -0.8]}] * 8)
+    st.save()
+    s = TradingSession(cfg, today=TODAY, clock=MARKET_HOURS)
+    assert (s.cfg.take_profit_pct, s.cfg.stop_loss_pct) == (1.0, 0.45)
+    assert TradingSession(dataclasses.replace(cfg, adaptive_exits=False), today=TODAY).cfg.stop_loss_pct == 0.35
+
+
+def test_cancelling_an_unfilled_entry_frees_the_symbol_for_a_reprice(cfg):
+    s = live_session(cfg)
+    s.propose_option_trade(OID, 1, 1.52, "t")
+    post(s, "place_option_order", order(price="1.52"), {"data": {"id": "open-1", "state": "queued"}})
+    s.market.broker_positions = {}
+    assert s.review_positions()["positions"][0]["action"] == "WAIT_FILL"
+    assert pre(s, RH + "cancel_option_order", {"account_number": ACCT, "order_id": "open-1"}) == {}
+    post(s, "cancel_option_order", {"account_number": ACCT, "order_id": "open-1"}, {"data": {"state": "cancelled"}})
+    assert OID not in s.state.positions
+    assert s.propose_option_trade(OID, 1, 1.55, "reprice toward the ask")["approved"]
+
+
+# ---- performance, go-live gate, monitor mode, alerts ----------------------------------
+
+from ponytail import alerts as al  # noqa: E402
+from ponytail import performance as perf  # noqa: E402
+
+
+def _trade(pnl, day, mode="paper", **kw):
+    return {"symbol": "SPY", "pnl": pnl, "r": pnl / 100, "mode": mode, "kind": "single", "reason": "take profit",
+            "closed_at": f"{day}T15:00:00+00:00", "held_days": 3, "slippage_pct": 0.01, **kw}
+
+
+def test_performance_report_and_benchmark(cfg, tmp_path):
+    st = State(str(tmp_path / "p.json"))
+    st.trade_log.extend([_trade(80, "2026-06-01"), _trade(-40, "2026-06-03"), _trade(60, "2026-06-05"),
+                         _trade(-120, "2026-06-08"), _trade(50, "2026-06-10")])
+    st.data["ai_cost_by_day"] = {"2026-06-01": 2.0, "2026-05-01": 99.0}   # costs before the first trade excluded
+    spy = [{"begins_at": "2026-06-01T00:00:00Z", "close_price": "700"}, {"begins_at": "2026-06-10T00:00:00Z", "close_price": "714"}]
+    rep = perf.report(st, 3000, mode="paper", spy_bars=spy)
+    assert rep["trades"] == 5 and rep["win_rate"] == 0.6 and rep["total_pnl"] == 30
+    assert rep["profit_factor"] == pytest.approx(190 / 160, abs=0.01)
+    assert rep["max_drawdown"] == 120 and rep["ai_costs"] == 2.0 and rep["net_pnl"] == 28
+    assert rep["spy_buy_and_hold_pct"] == 2.0 and rep["beat_spy"] is False   # +0.93% vs SPY +2%
+
+
+def test_go_live_gate(cfg, tmp_path):
+    st = State(str(tmp_path / "g.json"))
+    assert not perf.go_live_check(cfg, st, TODAY)["ready"]
+    for i in range(30):
+        st.trade_log.append(_trade(50 if i % 3 else -40, (date(2026, 8, 1) + timedelta(days=i)).isoformat()))
+    gate = perf.go_live_check(cfg, st, TODAY)
+    assert gate["ready"], gate
+    st.trade_log.extend(_trade(-200, "2026-09-15") for _ in range(4))     # deep drawdown fails the gate
+    assert not perf.go_live_check(cfg, st, TODAY)["ready"]
+
+
+def test_monitor_mode_blocks_entries_and_uses_cheap_model(cfg):
+    s = TradingSession(cfg, today=TODAY, monitor=True, clock=MARKET_HOURS)
+    opts = s.options()
+    assert opts.model == "claude-haiku-5-5" and opts.max_budget_usd == cfg.monitor_budget_usd
+    assert "MONITOR run" in s.kickoff()
+    for tool_name in ("compute_signals", "propose_option_trade", "rank_contracts", "warm_start"):
+        out = pre(s, "mcp__ponytail__" + tool_name, {})
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert pre(s, "mcp__ponytail__review_positions", {}) == {}
+
+
+def test_alerts_fire_on_trades_and_never_break_trading(session, monkeypatch):
+    sent = []
+    monkeypatch.setattr(al, "send", lambda url, msg, timeout=5: sent.append(msg) or True)
+    open_paper(session)
+    assert any("OPENED SPY 780.0 call" in m for m in sent)
+    monkeypatch.undo()
+    assert al.send("http://127.0.0.1:9/unreachable", "x", timeout=0.2) is False   # failure is swallowed

@@ -145,7 +145,8 @@ def reconcile(cfg, state, market, today):
             order = market.orders.get(pending["order_id"] or "")
             if order and order["state"] == "filled":
                 px = fill_price(order) or pending["price"]
-                pnl = state.close_position(oid, order["processed_quantity"] or pending["quantity"], px, "live close filled")
+                pnl = state.close_position(oid, order["processed_quantity"] or pending["quantity"], px,
+                                           pending.get("reason") or "live close filled")
                 events.append({"kind": "closed", "option_id": oid, "price": px, "pnl": round(pnl, 2)})
                 continue
             if (order and order["state"] in DEAD_STATES) or pending["placed_on"] != today.isoformat():
