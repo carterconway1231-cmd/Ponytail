@@ -21,13 +21,48 @@ trades through Robinhood's official MCP server.
           every signal & closed trade ──► factor weights, odds and exits adapt
 ```
 
-**The honest headline.** Tested on 12 large-cap stocks plus SPY/QQQ (Jun 2024 – Oct 2026),
-**none of the 16 factors predicts 5-day direction better than a coin flip**, and every
-entry setting that looked profitable in the first half failed to hold up in the second
-(see [Edge study](#edge-study)). The default gates mostly keep the agent out of the
-market, which is the right call given that evidence. Holding the stocks returned far
-more. Paper-trade it, rerun the study as data accrues, and don't loosen the gates to
-"make it trade."
+**The honest headline.** The agent ships two strategies, set with `STRATEGY`.
+
+- **`premium` (default): defined-risk premium selling.** The agent sells SPY/QQQ put credit spreads when implied vol is above realized vol. This harvests the volatility risk premium, the one options edge with long documented evidence, and it doesn't need a directional forecast. In a 2.3-year replay it was profitable in both halves of a train/test split at $25k. It still trailed holding SPY, it was tested only in a bull market, and it is too large for a $3k account. See [Premium strategy](#premium-strategy).
+- **`directional`: the original factor engine.** It buys calls, puts and debit spreads on 16 factors (ICT, order flow, trend and more). Tested on 12 large-cap stocks plus SPY/QQQ (Jun 2024 – Oct 2026), **none of the 16 factors predicts 5-day direction better than a coin flip**, and every entry setting that looked profitable in the first half failed to hold up in the second (see [Edge study](#edge-study)). It's kept for research and comparison.
+
+Paper-trade either one, rerun the studies as data accrues, and don't loosen the gates to "make it trade."
+
+## Premium strategy
+
+`STRATEGY=premium` (the default) sells **credit vertical spreads**. It sells an out-of-the-money option and buys a further one as insurance, so the most it can lose is fixed at entry (width − credit). Index option prices have historically implied more movement than the market then delivered. Selling that gap is the edge, and the agent only does it when the numbers say the gap is there today.
+
+| Step | Owner | Rule (default) |
+|---|---|---|
+| Underlyings | code | SPY, QQQ, IWM and DIA only. Single stocks lost money in the backtest after their wider bid/ask (`PREMIUM_ALLOW_STOCKS=false`). |
+| Vol filter | code | ATM implied vol ≥ 20-day realized vol × `PREMIUM_MIN_IV_RV` (1.0). |
+| Strikes | `rank_credit_spreads` | Puts (`PREMIUM_SIDE`), 30–60 DTE, short leg near 0.20 delta (max 0.35), width ≤ 1% of spot. Each candidate is scored by edge per dollar of risk: the credit minus the spread's value at *realized* vol, with an equity-style skew calibrated from real Robinhood quotes. |
+| Price | code | The limit sits between the natural credit and mid. The credit must be at least 10% of the width. |
+| Size | code | Max loss ≤ 10% of equity per position (`PREMIUM_RISK_PCT`) and ≤ 40% across all spreads. |
+| Judgment | Claude | Reads the market context (VIX level and trend, macro calendar, the SPY tape) and can skip a day or pick among ranked candidates. |
+| Exits | `review_positions` | Take profit at 50% of the credit. Loss stop when the loss reaches 2× the credit. Close at 21 DTE whatever happens. Each exit is a single 2-leg debit order. |
+
+The same guardrails apply as for the directional strategy: plan-matched orders, paper interception, circuit breakers, the entry window, the FOMC/CPI blackout and the earnings check. The hooks gate both the 2-leg open (sell short / buy long, `direction: credit`, at or above the approved credit) and the 2-leg close (a debit no greater than the width). Resting stop orders aren't used for spreads; the review rules manage them, and the long leg caps the worst case.
+
+**Backtest** (`STRATEGY=premium python -m ponytail.backtest BARS_DIR --capital 25000`). The replay ran Jun 2024 – Oct 2026 and was split on Aug 15, 2025. It used VIX × 0.88 as SPY's ATM IV (VIX includes skew), marked positions daily at that day's IV, and paid a calibrated half bid/ask on every leg.
+
+| Setting (SPY+QQQ puts, 1% wide, IV ≥ RV) | First half | Second half |
+|---|---|---|
+| Defaults: TP 50%, stop 2×, manage at 21 DTE, $25k | +11.6% | +6.2% |
+| No loss stop, hold to 21 DTE, $25k | +12.3% | +13.7% |
+| SPY buy-and-hold | +18% | +21% |
+| ~0.3%-wide spreads sized for $3k | −6.8% | −0.4% |
+| Same rules on single stocks | loses in both | |
+
+Over the whole period at defaults: 77 trades, 80.5% winners, profit factor 1.64, **+17.8%** with a 9.4% max drawdown, versus **+42.8%** for SPY buy-and-hold. Take-profits made +$10.6k; six loss stops gave back −$5.3k. Worst single trades were −$1.1k to −$1.9k at $25k.
+
+**Read it as follows.**
+
+- **The edge looks real but modest.** It was positive in both halves with settings fixed in advance, which the directional strategy never managed.
+- **It was tested only in a bull market.** Short puts did well in a rising market. A 2020- or 2022-style selloff is the risk this strategy is paid to carry, and it wasn't in the sample. The defined-risk long leg and the 40% total-risk cap are what keep that survivable.
+- **Small accounts don't work well.** With $3k, one 1%-wide SPY spread risks about $600 (20% of the account), so the per-position cap blocks it. Narrower spreads fit, but commissions-free or not, the bid/ask eats the credit. Below roughly $10–25k, expect the agent to mostly skip, or to trade at roughly breakeven.
+- **The stop is a trade-off.** Holding through drawdowns did better in this sample, but the stop is what limits a crash. The default keeps the stop.
+- **Account approval.** Selling spreads needs Robinhood options Level 3.
 
 ## How it decides
 
@@ -248,7 +283,7 @@ The study answers two questions honestly before you trust or loosen anything.
   - Which trades won flipped between halves: calls carried the first, puts the second.
 - **Defaults.** 10 trades in the first half (+$106) and none in the second. 72% of symbol-days were HOLD; most of the rest failed the EV gate or the earnings blackout.
 
-**Takeaway.** The engine works as designed: it measures, gates and sizes correctly, and it declines to trade without evidence. But the signals it's built on don't carry a measurable short-term edge on liquid large caps. Directional long premium also has to beat time decay and the volatility premium on top of being right. Keep the defaults, paper-trade, and rerun the study as data accrues. If you want an options strategy with a documented structural edge, the place to look is the other side of the volatility premium: defined-risk premium selling. That would be a deliberate change to this agent's rules, which currently forbid short premium.
+**Takeaway.** The engine works as designed: it measures, gates and sizes correctly, and it declines to trade without evidence. But the signals it's built on don't carry a measurable short-term edge on liquid large caps. Directional long premium also has to beat time decay and the volatility premium on top of being right. Keep the defaults, paper-trade, and rerun the study as data accrues. An options strategy with a documented structural edge sits on the other side of the volatility premium: defined-risk premium selling. That is now the default; see [Premium strategy](#premium-strategy).
 
 The ablation (`--ablate`) and exit tuner work, but with only a few dozen trades their results aren't meaningful yet.
 
@@ -286,10 +321,11 @@ An example cron schedule, with times in ET:
 
 ## Known limitations
 
-- **No proven edge.** See [Edge study](#edge-study). Paper-trade until the go-live checklist passes.
+- **Edge evidence is thin.** The directional factors showed none ([Edge study](#edge-study)). The premium strategy showed a modest edge only in a bull market ([Premium strategy](#premium-strategy)). Paper-trade until the go-live checklist passes.
+- **Short-premium tail risk.** A crash can take a credit spread to its full max loss in a day or two, and several spreads can lose at once. The 10%/40% risk caps bound it; they don't prevent it.
 - **Gap risk.** Stops limit losses but can't guarantee a price, and `stop_market` stops only exist from the first run each day.
 - **The EV model is simple.** It uses two scenarios with constant IV, so it ignores skew, vol crush and early exercise.
 - **Hourly history is short.** Robinhood serves about 6 months, so the hourly factors have small samples.
 - **Legacy bot.** `robinhood_trading_bot.py` is the original equity bot on `robin_stocks`, kept for reference.
 
-Options can lose 100% of the premium paid. You are responsible for every trade the agent places.
+Long options can lose 100% of the premium paid; credit spreads can lose their full width minus the credit. You are responsible for every trade the agent places.

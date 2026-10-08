@@ -70,7 +70,7 @@ def cfg(tmp_path):
     # Plumbing tests neutralize the EV and vol-regime gates; dedicated tests cover them.
     return Config(account_number=ACCT, symbols=["SPY", "QQQ"], state_path=str(tmp_path / "state.json"),
                   min_contract_ev=-1.0, iv_rv_expensive=99.0, iv_rank_expensive=101.0,
-                  events_path=str(tmp_path / "no-events.json"))
+                  events_path=str(tmp_path / "no-events.json"), strategy="directional")
 
 
 def ingest_spy_bars(s):
@@ -1013,3 +1013,199 @@ def test_edge_study_reports_both_halves_and_out_of_sample(cfg):
     small = dataclasses.replace(cfg, symbols=["SPY"])
     res = study.settings_study(small, events, {}, 3000, split, 5)
     assert len(res["grid"]) == 27 and "/" in res["profitable_out_of_sample"]
+
+
+# ---- premium strategy: credit verticals --------------------------------------
+
+from ponytail import premium as pm  # noqa: E402
+
+SHORT = "11111111-1111-4111-8111-111111111111"   # SPY 740P, ~0.20 delta
+LONG = "22222222-2222-4222-8222-222222222222"    # SPY 733P (width 7 <= 1% of spot)
+ATM = "33333333-3333-4333-8333-333333333333"     # SPY 780P, for the ATM IV read
+
+
+def put_inst(oid, strike, expiration="2026-11-20"):
+    return {"id": oid, "chain_symbol": "SPY", "expiration_date": expiration, "strike_price": f"{strike}",
+            "type": "put", "state": "active", "tradability": "tradable"}
+
+
+def put_quote(oid, bid, ask, delta, iv):
+    return {"quote": {"instrument_id": oid, "bid_price": f"{bid}", "ask_price": f"{ask}",
+                      "mark_price": f"{(bid + ask) / 2}", "delta": f"{delta}", "implied_volatility": f"{iv}",
+                      "open_interest": 500, "updated_at": fresh_ts()}}
+
+
+def quote_spread(s, short=(5.00, 5.12), long_=(3.60, 3.68), atm_iv=0.15):
+    s.market.ingest("get_option_quotes", {}, mcp({"data": {"results": [
+        put_quote(SHORT, *short, -0.20, 0.17), put_quote(LONG, *long_, -0.16, 0.18),
+        put_quote(ATM, 14.0, 14.2, -0.50, atm_iv)]}}))
+
+
+@pytest.fixture
+def pcfg(cfg):
+    return dataclasses.replace(cfg, strategy="premium", paper_capital=25000.0)
+
+
+@pytest.fixture
+def psession(pcfg):
+    s = TradingSession(pcfg, today=TODAY, clock=MARKET_HOURS)
+    ingest_spy_bars(s)  # last close 779.09, 20d realized vol ~10%
+    s.market.ingest("get_option_instruments", {}, mcp({"data": {"instruments": [
+        put_inst(SHORT, 740), put_inst(LONG, 733), put_inst(ATM, 780)]}}))
+    quote_spread(s)
+    return s
+
+
+def credit_order(qty="4", price="1.38", effect="open", direction="credit", **kw):
+    if effect == "open":
+        legs = [{"option_id": SHORT, "side": "sell", "position_effect": "open"},
+                {"option_id": LONG, "side": "buy", "position_effect": "open"}]
+    else:
+        legs = [{"option_id": SHORT, "side": "buy", "position_effect": "close"},
+                {"option_id": LONG, "side": "sell", "position_effect": "close"}]
+    o = {"account_number": ACCT, "quantity": qty, "price": price, "type": "limit", "direction": direction,
+         "legs": legs}
+    o.update(kw)
+    return o
+
+
+def test_skew_lifts_downside_iv_and_keeps_put_call_parity():
+    spot, t = 780.0, 45 / 365
+    assert pm.skewed_iv(0.15, spot, 780, t, "put", "SPY") == pytest.approx(0.15)
+    low, high = pm.skewed_iv(0.15, spot, 720, t, "put", "SPY"), pm.skewed_iv(0.15, spot, 840, t, "call", "SPY")
+    assert low > 0.15 > high
+    # Single stocks carry a flatter skew than index ETFs.
+    assert pm.skewed_iv(0.15, spot, 720, t, "put", "AAPL") < low
+    # Same strike, either type: identical IV.
+    assert pm.skewed_iv(0.15, spot, 720, t, "call", "SPY") == low
+    assert pm.half_spread(4.0, "SPY") == pytest.approx(0.01) and pm.half_spread(10.0, "AAPL") == pytest.approx(0.15)
+
+
+def test_credit_spread_strikes_and_edge():
+    spot, t = 780.0, 45 / 365
+    short_k, long_k = pm.credit_spread(spot, t, 0.15, "put", 0.20, 8, 1.0, "SPY")
+    assert long_k == short_k - 8 and 720 < short_k < 770
+    credit = pm.spread_value(spot, short_k, long_k, t, 0.15, "put", "SPY")
+    assert 0 < credit < 8
+    # Sold at implied 15% while the market realizes 10%: positive edge; at 20% realized it's negative.
+    assert pm.edge_vs_realized(credit, spot, short_k, long_k, t, 0.10, "put", "SPY") > 0
+    assert pm.edge_vs_realized(credit, spot, short_k, long_k, t, 0.20, "put", "SPY") < 0
+
+
+def test_rank_credit_spreads_sizes_by_max_loss(psession):
+    out = psession.rank_credit_spreads("SPY")
+    assert out["premium_rich"] and out["candidates"]
+    c = out["candidates"][0]
+    assert (c["short_option_id"], c["long_option_id"], c["width"]) == (SHORT, LONG, 7.0)
+    assert c["natural_credit"] <= c["suggested_limit_credit"] <= c["mid_credit"]
+    assert c["max_quantity"] == 4  # floor(10% of $25k / ~$562 max loss)
+
+
+def test_rank_says_skip_when_iv_is_not_above_realized(psession):
+    quote_spread(psession, atm_iv=0.05)
+    out = psession.rank_credit_spreads("SPY")
+    assert not out["premium_rich"] and "skip" in out["note"]
+
+
+def test_credit_open_approved_and_order_shape(psession):
+    out = psession.propose_credit_spread(SHORT, LONG, 4, 1.38, "VRP: IV over RV")
+    assert out["approved"], out
+    assert out["order"]["direction"] == "credit" and out["order"]["legs"][0] == {
+        "option_id": SHORT, "side": "sell", "position_effect": "open"}
+    assert out["max_loss_total"] == pytest.approx(4 * (7 - 1.38) * 100)
+
+
+@pytest.mark.parametrize("args, mutate, expected", [
+    ((SHORT, LONG, 5, 1.38), None, "exceeds the 4 allowed"),
+    ((SHORT, LONG, 4, 1.60), None, "outside [natural"),
+    ((LONG, SHORT, 1, 1.38), None, "further out of the money"),
+    ((SHORT, LONG, 4, 1.38), lambda s: quote_spread(s, atm_iv=0.05), "isn't rich enough"),
+    ((SHORT, LONG, 4, 1.38), lambda s: s.market.instruments[SHORT].update(symbol="AAPL"), "single stock"),
+    ((SHORT, LONG, 4, 1.38), lambda s: [s.market.instruments[k].update(expiration="2026-10-23") for k in (SHORT, LONG)],
+     "DTE 15"),
+    ((SHORT, LONG, 4, 1.38), lambda s: setattr(s, "cfg", dataclasses.replace(s.cfg, premium_side="call")),
+     "put credit spreads are disabled"),
+    ((SHORT, LONG, 4, 1.38), lambda s: setattr(s, "cfg", dataclasses.replace(s.cfg, strategy="directional")),
+     "only sold when STRATEGY=premium"),
+])
+def test_credit_open_rejections(psession, args, mutate, expected):
+    if mutate:
+        mutate(psession)
+    out = psession.propose_credit_spread(*args, "x")
+    assert not out["approved"] and any(expected in p for p in out["problems"]), out["problems"]
+
+
+def test_long_premium_entries_disabled_under_premium_strategy(psession):
+    out = psession.propose_option_trade(SHORT, 1, 5.05, "x")
+    assert not out["approved"] and any("STRATEGY=premium" in p for p in out["problems"])
+
+
+def test_credit_spread_paper_round_trip(psession):
+    assert "no approved credit-spread plan" in pre(psession, RH + "place_option_order", credit_order())[
+        "hookSpecificOutput"]["permissionDecisionReason"]
+    assert psession.propose_credit_spread(SHORT, LONG, 4, 1.38, "VRP")["approved"]
+    for bad, reason in [(credit_order(price="1.30"), "does not match"), (credit_order(qty="5"), "does not match"),
+                        (credit_order(type="market"), "limit orders only")]:
+        assert reason in pre(psession, RH + "place_option_order", bad)["hookSpecificOutput"]["permissionDecisionReason"]
+    out = pre(psession, RH + "place_option_order", credit_order())
+    assert "PAPER MODE" in out["hookSpecificOutput"]["permissionDecisionReason"]
+    pos = psession.state.positions[SHORT]
+    assert pos["kind"] == "credit_spread" and pos["max_loss"] == pytest.approx(562.0)
+    assert psession.state.open_premium() == pytest.approx(4 * 562.0)
+    assert not protect.unprotected(psession.state, psession.market, TODAY)  # no stop orders on spreads; rules manage them
+
+    # Spread decays to 0.60 (57% of the credit kept) -> take profit, closed as a debit.
+    quote_spread(psession, short=(1.50, 1.56), long_=(0.92, 0.96))
+    row = psession.review_positions()["positions"][0]
+    assert row["action"] == "CLOSE" and "take profit" in row["reason"]
+    close = row["close_order"]
+    assert close["direction"] == "debit" and close["legs"][0]["side"] == "buy"
+    bad = {**close, "price": "7.50"}
+    assert "can't exceed the spread width" in pre(psession, RH + "place_option_order", bad)[
+        "hookSpecificOutput"]["permissionDecisionReason"]
+    assert "PAPER MODE" in pre(psession, RH + "place_option_order", close)["hookSpecificOutput"]["permissionDecisionReason"]
+    trade = psession.state.trade_log[-1]
+    assert SHORT not in psession.state.positions
+    assert trade["pnl"] == pytest.approx((1.38 - float(close["price"])) * 4 * 100) and trade["pnl"] > 0
+    assert trade["kind"] == "credit_spread"
+
+
+@pytest.mark.parametrize("short, long_, expiration, expected", [
+    ((5.00, 5.12), (3.60, 3.68), "2026-11-20", "HOLD"),
+    ((9.00, 9.10), (4.70, 4.80), "2026-11-20", "loss stop"),     # mark 4.30: down 2.1x the 1.38 credit
+    ((5.00, 5.12), (3.60, 3.68), "2026-10-27", "manage threshold"),
+])
+def test_credit_spread_exit_rules(pcfg, short, long_, expiration, expected):
+    s = TradingSession(pcfg, today=TODAY, clock=MARKET_HOURS)
+    s.market.ingest("get_option_instruments", {}, mcp({"data": {"instruments": [
+        put_inst(SHORT, 740, expiration), put_inst(LONG, 733, expiration)]}}))
+    s.state.open_credit_spread(SHORT, s.market.instruments[SHORT], LONG, s.market.instruments[LONG], 2, 1.38, "paper")
+    quote_spread(s, short=short, long_=long_)
+    row = risk.review_exits(s.cfg, s.state, s.market, s.signals, TODAY)[0]
+    assert (row["action"] == "HOLD") if expected == "HOLD" else expected in row["reason"], row
+
+
+def test_broker_short_legs_count_as_held(pcfg):
+    s = TradingSession(dataclasses.replace(pcfg, live_trading=True), today=TODAY, clock=MARKET_HOURS)
+    s.market.ingest("get_option_instruments", {}, mcp({"data": {"instruments": [put_inst(SHORT, 740), put_inst(LONG, 733)]}}))
+    s.state.open_credit_spread(SHORT, s.market.instruments[SHORT], LONG, s.market.instruments[LONG], 2, 1.38, "live")
+    s.state.positions[SHORT].update(filled=True)
+    s.market.ingest("get_option_positions", {"nonzero": True}, mcp({"data": {"results": [
+        {"option_id": SHORT, "quantity": "2.0000", "type": "short"},
+        {"option_id": LONG, "quantity": "2.0000", "type": "long"}]}}))
+    assert s.market.broker_positions == {SHORT: -2.0, LONG: 2.0}
+    assert not [e for e in protect.reconcile(s.cfg, s.state, s.market, TODAY) if e["kind"] == "dropped"]
+    assert SHORT in s.state.positions
+
+
+def test_premium_backtest_runs_on_real_bars(cfg):
+    events = bt.precompute({"SPY": {"day": real_bars("day")}, "VIX": {"day": vix_bars()}}, 5)
+    funnel = {}
+    trades = bt.simulate_premium(dataclasses.replace(cfg, symbols=["SPY"]), events, 25000, {"min_iv_rv": 0}, funnel=funnel)
+    assert trades and all(t["pnl"] >= -(t.get("max_loss") or 1e9) for t in trades)
+
+
+def test_backtest_cli_runs_the_configured_strategy(pcfg):
+    out = bt.run(pcfg, {"SPY": {"day": real_bars("day")}, "VIX": {"day": vix_bars()}}, 25000)
+    assert out["strategy"] == "premium" and out["symbols"] == ["SPY"]
+    assert out["params"]["structure"] == "put" and out["params"]["dte"] == 45

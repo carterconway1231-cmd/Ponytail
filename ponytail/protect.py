@@ -77,7 +77,17 @@ def is_confirmed(pos, market):
 
 
 def is_spread(pos):
+    """Debit vertical (bought spread)."""
     return pos.get("kind") == "spread"
+
+
+def is_credit(pos):
+    """Sold vertical, keyed by its short leg."""
+    return pos.get("kind") == "credit_spread"
+
+
+def is_single(pos):
+    return pos.get("kind", "single") == "single"
 
 
 def position_mark(oid, pos, market):
@@ -87,6 +97,14 @@ def position_mark(oid, pos, market):
     q = market.quotes.get(oid)
     if not q or not q.get("mark"):
         return None
+    if is_credit(pos):
+        # Cost to buy back: short leg minus long leg. Closing buys the short at its
+        # ask and sells the long at its bid (natural), or better toward mid.
+        lq = market.quotes.get(pos["long_option_id"])
+        if not lq or lq.get("mark") is None:
+            return None
+        return (max(0.0, q["mark"] - lq["mark"]), max(0.0, (q.get("bid") or 0) - (lq.get("ask") or 0)),
+                (q.get("ask") or 0) - (lq.get("bid") or 0))
     if not is_spread(pos):
         return q["mark"], q.get("bid") or 0.0, q.get("ask") or 0.0
     s = market.quotes.get(pos["short_option_id"])
@@ -97,10 +115,11 @@ def position_mark(oid, pos, market):
 
 
 def unprotected(state, market, today):
-    """Held singles without a resting stop. Debit spreads are exempt: their
-    max loss is the debit paid, and Robinhood stops are single-leg only."""
+    """Held singles without a resting stop. Spreads (debit and credit) are
+    exempt: their max loss is capped by structure, and Robinhood stops are
+    single-leg only, so they exit by review instead."""
     return [oid for oid, p in state.positions.items()
-            if not is_spread(p) and is_confirmed({**p, "option_id": oid}, market) and not stop_is_active(p, today)]
+            if is_single(p) and is_confirmed({**p, "option_id": oid}, market) and not stop_is_active(p, today)]
 
 
 def fill_price(order):
@@ -176,7 +195,7 @@ def simulate_paper_stops(state, market, today):
     for oid in list(state.positions):
         pos = state.positions[oid]
         stop, quote = pos.get("stop"), market.quotes.get(oid)
-        if is_spread(pos) or pos["mode"] != "paper" or not stop or not stop_is_active(pos, today) or not quote or not quote.get("mark"):
+        if not is_single(pos) or pos["mode"] != "paper" or not stop or not stop_is_active(pos, today) or not quote or not quote.get("mark"):
             continue
         if quote["mark"] > stop["stop_price"]:
             continue

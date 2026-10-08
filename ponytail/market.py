@@ -154,8 +154,9 @@ class MarketCache:
                 m = UUID_RE.search(str(pos.get("option", "")))
                 option_id = m.group(0) if m else None
             qty = _f(pos.get("quantity")) or 0
-            if option_id and qty > 0 and pos.get("type", "long") == "long":
-                held[option_id] = qty
+            if option_id and qty > 0:
+                # Short legs (credit spreads) are recorded as negative quantities.
+                held[option_id] = qty if pos.get("type", "long") == "long" else -qty
         self.broker_positions = held
 
     def _ingest_get_option_orders(self, data, tool_input):

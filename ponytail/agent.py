@@ -22,7 +22,7 @@ from claude_agent_sdk import (
     create_sdk_mcp_server, query, tool,
 )
 
-from . import alerts, events as macro, exits, performance, protect, risk, selection, sizing
+from . import alerts, events as macro, exits, performance, premium as pm, protect, risk, selection, sizing
 from .factors import compute_factors
 from .learner import Learner
 from .market import MarketCache, decode_tool_response
@@ -46,9 +46,10 @@ RH_READ_TOOLS = {
 }
 RH_WRITE_TOOLS = {"review_option_order", "place_option_order", "cancel_option_order"}
 LOCAL_TOOLS = {"compute_signals", "rank_contracts", "propose_option_trade", "review_positions", "portfolio_status",
-               "learning_report", "warm_start", "performance_report"}
+               "learning_report", "warm_start", "performance_report", "rank_credit_spreads", "propose_credit_spread"}
 
-MONITOR_BLOCKED = {LOCAL + t for t in ("compute_signals", "rank_contracts", "propose_option_trade", "warm_start")}
+MONITOR_BLOCKED = {LOCAL + t for t in ("compute_signals", "rank_contracts", "propose_option_trade", "warm_start",
+                                        "rank_credit_spreads", "propose_credit_spread")}
 
 ALLOWED_TOOLS = (
     {RH + t for t in RH_READ_TOOLS | RH_WRITE_TOOLS}
@@ -98,7 +99,7 @@ class TradingSession:
     @property
     def discovered(self):
         """Top scanner candidates (unusual options activity) outside the core universe."""
-        if not self.cfg.discover or not self.market.scan:
+        if self.cfg.strategy != "directional" or not self.cfg.discover or not self.market.scan:
             return []
         rows = [r for r in self.market.scan if r["symbol"] not in self.cfg.symbols
                 and (r["last"] or 0) >= 10 and (r["options_volume"] or 0) >= 20000]
@@ -191,6 +192,8 @@ class TradingSession:
                                    self.today, short_option_id=short_option_id, universe=self.universe)
         inst = self.market.instruments.get(option_id, {})
         plan_extra = {}
+        if cfg.strategy != "directional":
+            problems.append("long-premium entries are disabled (STRATEGY=premium); use rank_credit_spreads")
         if self.monitor:
             problems.append("monitor runs manage positions only; new entries happen on full runs")
         if not self.entry_window_open():
@@ -244,6 +247,56 @@ class TradingSession:
                 "premium_at_risk": round(cost, 2), **plan_extra,
                 "next": "review_option_order, then place_option_order with exactly these arguments", "order": order}
 
+    def rank_credit_spreads(self, symbol):
+        symbol = symbol.upper()
+        daily = self.market.bars.get(symbol, {}).get("day") or []
+        spot = selection.underlying_spot(self.market, symbol)
+        if spot is None or not daily:
+            return {"error": f"no bars for {symbol}; fetch daily bars first (needed for realized vol)"}
+        rv = realized_vol(daily)
+        vol = self.vol_assessment(symbol)
+        atm = vol.get("atm_iv")
+        rich = atm is not None and rv is not None and atm >= self.cfg.premium_min_iv_rv * rv
+        rows = pm.rank_live(self.cfg, self.market, self.state, symbol, spot, rv, atm, self.today, self.equity())
+        out = {"symbol": symbol, "spot": spot, "atm_iv": atm, "realized_vol_20d": None if rv is None else round(rv, 3),
+               "premium_rich": rich, "candidates": rows}
+        if not rich:
+            out["note"] = ("implied vol is not above realized: the edge this strategy sells isn't there today; skip"
+                           if atm is not None else "quote near-the-money strikes so ATM IV can be measured")
+        elif not rows:
+            out["note"] = ("no candidate fits: quote more strikes in the DTE window (shorts around 0.15-0.30 delta and "
+                           "the strikes just beyond them), or the risk budget is too small for this underlying")
+        return out
+
+    def propose_credit_spread(self, short_option_id, long_option_id, quantity, limit_credit, thesis):
+        cfg = self.cfg
+        daily = (self.market.bars.get((self.market.instruments.get(short_option_id) or {}).get("symbol"), {})
+                 .get("day") or [])
+        problems, details = risk.check_credit_open(
+            cfg, self.state, self.market, short_option_id, long_option_id, quantity, limit_credit, self.today,
+            realized_vol(daily) if daily else None, self.equity(), self.universe)
+        if self.monitor:
+            problems.append("monitor runs manage positions only; new entries happen on full runs")
+        if not self.entry_window_open():
+            problems.append(f"outside the entry window {'-'.join(cfg.entry_window)} ET")
+        for e in macro.blackout(self.macro_events, self.today, cfg.event_blackout_days):
+            problems.append(f"macro blackout: {e['name']} on {e['date']}")
+        if problems:
+            self.audit("plan_rejected", option_id=short_option_id, structure="credit_spread", problems=problems, **details)
+            return {"approved": False, "problems": problems, "details": details}
+        self.plans[short_option_id] = {"kind": "credit_spread", "long_option_id": long_option_id,
+                                       "quantity": float(quantity), "limit_credit": float(limit_credit),
+                                       "thesis": thesis, "entry_mid": details["mid_credit"]}
+        self.audit("plan_approved", option_id=short_option_id, structure="credit_spread", quantity=quantity,
+                   limit_credit=limit_credit, thesis=thesis, **details)
+        order = {"account_number": cfg.account_number, "quantity": f"{quantity:g}", "type": "limit",
+                 "price": f"{limit_credit:.2f}", "time_in_force": "gfd", "direction": "credit",
+                 "legs": [{"option_id": short_option_id, "side": "sell", "position_effect": "open"},
+                          {"option_id": long_option_id, "side": "buy", "position_effect": "open"}]}
+        return {"approved": True, **details, "quantity": quantity, "limit_credit": limit_credit,
+                "max_loss_total": round(details["max_loss_per_spread"] * quantity, 2),
+                "next": "review_option_order, then place_option_order with exactly this order", "order": order}
+
     def review_positions(self):
         events = protect.reconcile(self.cfg, self.state, self.market, self.today)
         events += protect.simulate_paper_stops(self.state, self.market, self.today)
@@ -263,6 +316,8 @@ class TradingSession:
         return {"mode": self.mode, "broker_events": events, "positions": rows, "circuit_breakers": breakers}
 
     def needs_warm_start(self):
+        if self.cfg.strategy != "directional":
+            return []  # the factor learner only drives the directional strategy
         return [sym for sym in self.cfg.symbols if sym not in self.learner.d["warm_start"]["symbols"]]
 
     def warm_start(self):
@@ -288,7 +343,7 @@ class TradingSession:
         log_ = self.state.trade_log
         return {
             "mode": self.mode, "account_number": self.cfg.account_number, "today": day,
-            "universe": self.cfg.symbols,
+            "core_symbols": self.cfg.symbols,
             "learning": {k: self.learner.d[k] for k in ("trades_learned", "shadow_learned")},
             "needs_warm_start": self.needs_warm_start(),
             "open_positions": self.state.positions, "open_premium": round(self.state.open_premium(), 2),
@@ -408,6 +463,15 @@ class TradingSession:
                 "order_id": order_id, "type": order["type"], "stop_price": order["stop_price"],
                 "limit_price": order.get("price"), "placed_on": self.today.isoformat(), "mode": mode}
             self.audit("stop_placed", mode=mode, option_id=oid, stop_price=order["stop_price"], order_id=order_id)
+        elif order["effect"] == "credit_open":
+            plan = self.plans.pop(oid, {})
+            short, long_ = self.market.instruments[oid], self.market.instruments[order["long_option_id"]]
+            self.state.open_credit_spread(oid, short, order["long_option_id"], long_, order["quantity"], order["price"],
+                                          mode, order_id=order_id,
+                                          extra={k: plan[k] for k in ("entry_mid",) if k in plan})
+            self.audit("opened", mode=mode, option_id=oid, contract=short, quantity=order["quantity"],
+                       price=order["price"], structure="credit_spread", long_strike=long_["strike"], order_id=order_id,
+                       broker=broker_response)
         elif order["effect"] == "open":
             inst = self.market.instruments[oid]
             plan = self.plans.pop(oid, {})
@@ -492,6 +556,28 @@ class TradingSession:
         async def warm_start(args):
             return _text(s.warm_start())
 
+        @tool("rank_credit_spreads",
+              "PREMIUM strategy: rank credit verticals for a symbol from the contracts quoted this run. Checks "
+              "whether implied vol is above realized (the edge being sold) and returns candidates with natural/mid "
+              "credit, suggested limit, max loss, edge vs realized vol per dollar of risk, and max quantity.",
+              {"symbol": str})
+        async def rank_credit_spreads(args):
+            return _text(s.rank_credit_spreads(args["symbol"]))
+
+        @tool("propose_credit_spread",
+              "PREMIUM strategy: submit a credit vertical (sell short_option_id, buy the further-OTM long_option_id) "
+              "for guardrail approval. Returns the exact order to place, or the rules it breaks.",
+              {"type": "object", "properties": {
+                  "short_option_id": {"type": "string", "description": "the option sold (closer to the money)"},
+                  "long_option_id": {"type": "string", "description": "the protective option bought (further OTM)"},
+                  "quantity": {"type": "integer", "minimum": 1},
+                  "limit_credit": {"type": "number", "description": "net credit per share, between natural and mid"},
+                  "thesis": {"type": "string"}},
+               "required": ["short_option_id", "long_option_id", "quantity", "limit_credit", "thesis"]})
+        async def propose_credit_spread(args):
+            return _text(s.propose_credit_spread(args["short_option_id"], args["long_option_id"], args["quantity"],
+                                                 float(args["limit_credit"]), args["thesis"]))
+
         @tool("performance_report", "Scoreboard: win rate, expectancy, profit factor, drawdown, return vs SPY "
               "buy-and-hold, results net of AI costs, breakdowns by structure / vol regime / exit reason, "
               "and the go-live checklist.", {})
@@ -504,7 +590,8 @@ class TradingSession:
 
         return create_sdk_mcp_server("ponytail", tools=[compute_signals, rank_contracts, propose_option_trade, review_positions,
                                                        portfolio_status, learning_report, warm_start,
-                                                       performance_report])
+                                                       performance_report, rank_credit_spreads,
+                                                       propose_credit_spread])
 
     def options(self):
         servers = {"ponytail": self.local_server()}
@@ -516,7 +603,8 @@ class TradingSession:
         return ClaudeAgentOptions(
             model=self.cfg.monitor_model if self.monitor else self.cfg.model,
             effort=self.cfg.monitor_effort if self.monitor else self.cfg.effort,
-            system_prompt=SYSTEM_PROMPT + (MONITOR_PROMPT if self.monitor else ""),
+            system_prompt=(PREMIUM_PROMPT if self.cfg.strategy == "premium" else SYSTEM_PROMPT)
+            + (MONITOR_PROMPT if self.monitor else ""),
             # No file/shell tools. ToolSearch only loads deferred MCP tool schemas
             # (and waits for still-connecting servers like the Robinhood connector).
             tools=["ToolSearch"],
@@ -536,6 +624,12 @@ class TradingSession:
                     f"Account: {self.cfg.account_number}. Do step 1 of the cycle only: protect and exit held "
                     f"positions, then report in three lines or fewer. If nothing is held, say so and stop.")
         ago = lambda days: (self.today - timedelta(days=days)).isoformat() + "T00:00:00Z"  # noqa: E731
+        if self.cfg.strategy == "premium":
+            return (f"Run today's PREMIUM cycle. Date: {self.today.isoformat()}. Mode: {self.mode.upper()}.\n"
+                    f"Account: {self.cfg.account_number}. Underlyings: {', '.join(self.cfg.symbols)}. "
+                    f"Side: {self.cfg.premium_side} credit spreads, {self.cfg.premium_min_dte}-"
+                    f"{self.cfg.premium_max_dte} DTE, short delta near {self.cfg.premium_short_delta}.\n"
+                    f"Fetch daily bars with interval='day' and start_time='{ago(90)}' for realized vol.")
         need = self.needs_warm_start()
         warm = (f"\nWarm start needed for: {', '.join(need)}. Before computing signals, fetch long history "
                 f"for those symbols: interval='day' with start_time='{ago(1095)}', and interval='hour' with "
@@ -549,6 +643,40 @@ class TradingSession:
             f"start_time='{ago(420)}', and interval='hour' with start_time='{ago(30)}'." + warm
         )
 
+
+PREMIUM_PROMPT = """You are Ponytail, an autonomous options agent running the PREMIUM strategy on a small Robinhood account through the Robinhood MCP tools. Each run is one cycle. No human reviews trades before they are placed, so be deliberate, and when in doubt, don't trade.
+
+The strategy: sell defined-risk credit vertical spreads, by default put spreads on index ETFs. Sell a put about 20 delta, 30-60 days out, and buy a further-out put as insurance. The edge is the volatility risk premium: options usually price in more movement than the index delivers. It does not need a market forecast. The risk is a fast selloff. That is why size is set by max loss, losers are cut at 2x the credit, winners are taken at 50% of the credit, and every position is closed by 21 DTE. In the backtest this was positive in both halves on SPY/QQQ with normal-width spreads, and it lost on single stocks.
+
+Code enforces the rules. propose_credit_spread and the order hooks check:
+- underlying and side, DTE, short delta, leg markets and open interest
+- credit vs width, implied vs realized vol
+- max loss vs equity, portfolio limits, macro and earnings blackouts, the entry window
+Spreads need no resting stop orders; review_positions manages exits. If a rule rejects a trade, pick another candidate or skip. Never work around a rule.
+
+Cycle:
+0. If the Robinhood tools are not directly available, load them with ToolSearch ("select:mcp__Robinhood__get_option_quotes,..." or a keyword search for "Robinhood").
+1. Manage what you hold first:
+   a. portfolio_status, get_portfolio, get_option_positions (nonzero=true), get_option_orders (created_at_gte = 7 days ago).
+   b. Quote both legs of every held spread (get_option_quotes), then review_positions.
+   c. For each CLOSE row, place_option_order with exactly the close_order given. For WAIT_FILL entries from an earlier run that are still unfilled, cancel_option_order and re-propose only if still valid.
+2. Stop here if there are circuit_breakers, entry_window_open is false, or upcoming_events shows a blackout. Report why.
+3. For each underlying:
+   a. get_equity_historicals with interval='day' (realized vol needs about 30 bars).
+   b. get_option_chains, then get_option_instruments for one or two expirations in the DTE window, for the configured side.
+   c. get_option_quotes for strikes from just in the money down to about 0.08 delta: about 15-20 strikes, including the ATM ones (for the IV check) and the strikes beyond each candidate short leg.
+   d. rank_credit_spreads(symbol). If premium_rich is false, skip the symbol today and say so. Otherwise take the top candidate unless something about it looks wrong (a stale or crossed quote, an odd width).
+   e. propose_credit_spread with that candidate's short/long ids, quantity <= max_quantity and the suggested limit credit. If approved, review_option_order, then place_option_order with exactly the returned order.
+4. End with a short report: mode, exits taken, positions held (credit, current P&L, DTE), new spreads sold or skipped with reasons, and the performance_report headline if trades have closed.
+
+Rules:
+- Always pass the configured account_number.
+- Only sell credit verticals with the long leg present. Never sell a naked option, never place market orders, never exercise.
+- When unsure whether to hold a losing spread, close it.
+- If review_option_order shows real problems (buying power, options level, halted contracts), skip the trade.
+- In PAPER mode, place_option_order is intercepted and returns a simulated fill. Treat that as a successful order.
+- If a Robinhood tool errors, retry once at most, then move on.
+"""
 
 MONITOR_PROMPT = """
 

@@ -15,10 +15,15 @@ train. On every later day each symbol gets the same pipeline as live:
 Modeling assumptions (read results with these in mind):
   * Historical option quotes aren't available, so IV is proxied by VIX scaled
     by the symbol's realized vol relative to SPY (or 1.15x realized vol
-    without VIX) and held constant over each trade: no vol crush or spikes.
-  * Fills cost HALF_SPREAD_PCT of the option price per side beyond mid
-    (ENTRY_SLIPPAGE_PCT of it on entries), and exits are evaluated on daily
-    closes, so intraday stop fills are approximated by the close.
+    without VIX). Positions are marked each day at that day's IV proxy, so
+    vol spikes in selloffs and crush afterwards are reflected. For SPY the
+    proxy is VIX itself (real data); for single stocks it assumes the same
+    implied/realized ratio as the index, which is an approximation.
+  * Fills cost a half bid/ask per leg calibrated from real quotes
+    (premium.half_spread: ~0.25% of price for index ETFs, ~1.5% with a
+    $0.05 floor for single stocks), ENTRY_SLIPPAGE_PCT of it on entries and
+    all of it on exits. Exits are evaluated on daily closes, so intraday stop
+    fills are approximated by the close. Skew is modeled (premium.skewed_iv).
   * Hourly factors only exist where hourly bars do (about the last 6 months).
   * Earnings: entries are blocked when a report falls before the simulated
     expiry, like the live gate. Robinhood returns ~2 years of report dates;
@@ -26,6 +31,7 @@ Modeling assumptions (read results with these in mind):
     +/-7-day margin for the date uncertainty.
 
   python -m ponytail.backtest BARS_DIR [--ablate] [--save-exits] [--capital N]
+  (STRATEGY=premium, the default, replays credit spreads; STRATEGY=directional the factor strategy)
   BARS_DIR holds SYM_day.json / SYM_hour.json bar lists, VIX_day.json, and
   optionally SYM_earnings.json (a list of report dates).
 """
@@ -36,16 +42,15 @@ from datetime import date, timedelta
 
 from .factors import ALL_FACTORS, MIN_DAILY_BARS, MIN_HOURLY_BARS, compute_factors
 from .learner import Learner
-from .options_math import bs_price, scenario_ev
+from .options_math import scenario_ev
 from .sizing import max_contracts
 from .state import MULTIPLIER, State
 from .warmstart import CONTEXT_SYMBOLS, DAILY_WINDOW, HOURLY_WINDOW, INDEX_SYMBOLS, MIN_HISTORY, _real, _upper
 
 TARGET_DTE = 30
 SPREAD_WIDTHS_PCT = (0.005, 0.01, 0.02)  # of spot: ~$4 / $8 / $16 wide on a $780 ETF
-HALF_SPREAD_PCT = 0.015                  # option half bid/ask as a fraction of price (liquid names)
-MIN_HALF_SPREAD = 0.02
 TRADE_AFTER = 60                         # replay days that only train the learner
+VIX_TO_ATM = 0.88
 
 
 def _rv(closes):
@@ -85,7 +90,9 @@ def precompute(bars_by_symbol, horizon):
             j = _upper(spy_days, day)
             spy_rv = _rv([spy_closes[d] for d in spy_days[max(0, j - 21):j]]) if j else None
             if day in vix and spy_rv:
-                iv = vix[day] / 100 * min(2.5, max(0.7, rv / spy_rv))
+                # VIX is a variance-swap level that includes skew; SPY ATM IV runs ~0.88x
+                # of it (13.2% vs VIX 15.0 on 2026-10-06). Skew is modeled separately.
+                iv = VIX_TO_ATM * vix[day] / 100 * min(2.5, max(0.7, rv / spy_rv))
             else:
                 iv = rv * 1.15
             events.append({
@@ -121,12 +128,14 @@ def _earnings_in(windows, first, last):
     return any(lo <= last and hi >= first for lo, hi in windows)
 
 
-def _half_spread(price):
-    return max(MIN_HALF_SPREAD, HALF_SPREAD_PCT * price)
+def _half_spread(price, symbol=None):
+    from .premium import half_spread
+    return half_spread(price, symbol)
 
 
-def _value(legs, spot, years, iv):
-    return sum(sign * bs_price(spot, k, years, iv, kind) for k, kind, sign in legs)
+def _value(legs, spot, years, iv, symbol=None):
+    from .premium import leg_price
+    return sum(sign * leg_price(spot, k, years, iv, kind, symbol) for k, kind, sign in legs)
 
 
 def _candidates(cfg, spot, iv, rv, kind, structure):
@@ -187,7 +196,7 @@ def simulate(cfg, events, capital, horizon, mask=None, funnel=None, earnings=Non
             pos = positions.get(sym)
             if pos:  # mark and apply exits at the close
                 years = max(0.0, (pos["expiry"] - today).days / 365)
-                value = _value(pos["legs"], spot, years, pos["iv"])
+                value = _value(pos["legs"], spot, years, e["iv"], sym)  # today's IV: vol expansion/crush shows up
                 r = (value - pos["entry"]) / pos["entry"]
                 pos["path"].append(round(r, 4))
                 pos["hwm"] = max(pos["hwm"], value)
@@ -203,7 +212,8 @@ def simulate(cfg, events, capital, horizon, mask=None, funnel=None, earnings=Non
                           "time stop" if held >= cfg.time_stop_days and r < cfg.time_stop_min_gain else
                           "signal reversed" if flipped else None)
                 if reason:
-                    exit_px = max(0.0, value - _half_spread(abs(value)))
+                    exit_px = max(0.0, value - sum(_half_spread(_value([leg], spot, years, e["iv"], sym), sym)
+                                                   for leg in pos["legs"]))
                     pnl = (exit_px - pos["entry"]) * MULTIPLIER * pos["qty"]
                     premium = pos["entry"] * MULTIPLIER * pos["qty"]
                     learner.learn_trade(pos["signal"], pos["direction"], pnl, premium, today)
@@ -238,10 +248,11 @@ def simulate(cfg, events, capital, horizon, mask=None, funnel=None, earnings=Non
             p_up = decision["p_win"] if kind == "call" else 1 - decision["p_win"]
             best, why = None, "no candidate"
             for name, legs in _candidates(cfg, spot, e["iv"], e["rv"], kind, structure):
-                mid = _value(legs, spot, TARGET_DTE / 365, e["iv"])
+                mid = _value(legs, spot, TARGET_DTE / 365, e["iv"], sym)
                 if mid <= 0.05:
                     continue
-                half = sum(_half_spread(bs_price(spot, k, TARGET_DTE / 365, e["iv"], kd)) for k, kd, _ in legs)
+                half = sum(_half_spread(_value([(k, kd, 1)], spot, TARGET_DTE / 365, e["iv"], sym), sym)
+                           for k, kd, _ in legs)
                 cost = mid + cfg.entry_slippage_pct * half
                 if len(legs) == 2 and cost > cfg.max_spread_debit_pct * abs(legs[1][0] - legs[0][0]):
                     why = "spread debit too large vs width"
@@ -276,6 +287,101 @@ def simulate(cfg, events, capital, horizon, mask=None, funnel=None, earnings=Non
     return trades, learner
 
 
+# ---- premium selling (credit verticals) -----------------------------------------
+
+PREMIUM_DEFAULTS = {
+    "structure": "put",      # put | call | condor
+    "short_delta": 0.20,
+    "dte": 45,
+    "width_pct": 0.01,       # strike width as a fraction of spot (>= one strike step)
+    "take_profit": 0.50,     # close when 50% of the credit is captured
+    "stop_x": 2.0,           # close when the loss reaches 2x the credit
+    "manage_dte": 21,        # close at 21 DTE regardless
+    "min_iv_rv": 1.0,        # only sell when implied vol >= realized vol x this
+    "min_credit_pct": 0.10,  # credit must be >= 10% of width
+    "risk_pct": 0.10,        # max loss per position as a fraction of equity
+    "max_total_risk_pct": 0.40,
+}
+
+
+def simulate_premium(cfg, events, capital, params=None, earnings=None, funnel=None):
+    """Sell credit verticals; returns trades. Same walk-forward clock and cost
+    model as the directional simulator, with skewed IV and daily IV marks."""
+    from . import premium as pm
+    p = {**PREMIUM_DEFAULTS, **(params or {})}
+    funnel = funnel if funnel is not None else {}
+
+    def drop(key):
+        funnel[key] = funnel.get(key, 0) + 1
+
+    start = date.fromisoformat(events[0]["day"])
+    blackout = {sym: earnings_windows(dates, start) for sym, dates in (earnings or {}).items()}
+    sides = {"put": ["put"], "call": ["call"], "condor": ["put", "call"]}[p["structure"]]
+    day_list = sorted({e["day"] for e in events})
+    trade_from = day_list[min(TRADE_AFTER, len(day_list) - 1)]
+    equity, positions, trades = capital, {}, []
+
+    for e in events:
+        day, sym, spot, iv = e["day"], e["sym"], e["close"], e["iv"]
+        today = date.fromisoformat(day)
+        for side in sides:
+            key = (sym, side)
+            pos = positions.get(key)
+            if pos:
+                years = max(0.0, (pos["expiry"] - today).days / 365)
+                value = pm.spread_value(spot, pos["short"], pos["long"], years, iv, side, sym)
+                legs = [pm.leg_price(spot, k, years, iv, side, sym) for k in (pos["short"], pos["long"])]
+                close_cost = min(pos["width"], value + sum(_half_spread(x, sym) for x in legs))
+                loss = close_cost - pos["credit"]
+                dte_left = (pos["expiry"] - today).days
+                reason = ("take profit" if value <= (1 - p["take_profit"]) * pos["credit"] else
+                          "loss stop" if loss >= p["stop_x"] * pos["credit"] else
+                          "manage dte" if dte_left <= p["manage_dte"] else None)
+                pos["path"].append(round(-loss / pos["credit"], 3))
+                if reason:
+                    pnl = (pos["credit"] - close_cost) * MULTIPLIER * pos["qty"]
+                    equity += pnl
+                    trades.append({"symbol": sym, "kind": "credit_spread", "structure": f"{side}_credit",
+                                   "direction": side, "mode": "backtest", "pnl": round(pnl, 2),
+                                   "r": round(pnl / (pos["max_loss"] * pos["qty"]), 3), "reason": reason,
+                                   "path": pos["path"], "held_days": (today - pos["opened"]).days,
+                                   "opened": pos["opened"].isoformat(), "closed_at": f"{day}T20:00:00+00:00",
+                                   "credit": round(pos["credit"], 2), "width": pos["width"]})
+                    del positions[key]
+                continue
+            if day < trade_from:
+                continue
+            drop("evaluated")
+            if cfg.avoid_earnings and _earnings_in(blackout.get(sym, []), today, today + timedelta(days=p["dte"])):
+                drop("earnings before expiry")
+                continue
+            if e["rv"] and iv < p["min_iv_rv"] * e["rv"]:
+                drop("IV not rich vs realized")
+                continue
+            years = p["dte"] / 365
+            step = pm.strike_step(spot)
+            width = max(step, round(spot * p["width_pct"] / step) * step)
+            short_k, long_k = pm.credit_spread(spot, years, iv, side, p["short_delta"], width, step, sym)
+            mid = pm.spread_value(spot, short_k, long_k, years, iv, side, sym)
+            legs = [pm.leg_price(spot, k, years, iv, side, sym) for k in (short_k, long_k)]
+            credit = mid - cfg.entry_slippage_pct * sum(_half_spread(x, sym) for x in legs)
+            if credit < p["min_credit_pct"] * width:
+                drop("credit too small vs width")
+                continue
+            max_loss = (width - credit) * MULTIPLIER
+            open_risk = sum(x["max_loss"] * x["qty"] for x in positions.values())
+            qty = min(math.floor(equity * p["risk_pct"] / max_loss),
+                      math.floor((equity * p["max_total_risk_pct"] - open_risk) / max_loss))
+            if qty < 1:
+                drop("risk budget < 1 spread")
+                continue
+            drop("opened")
+            positions[key] = {"short": short_k, "long": long_k, "width": width, "credit": credit, "qty": qty,
+                              "max_loss": max_loss, "opened": today, "expiry": today + timedelta(days=p["dte"]),
+                              "path": []}
+    return trades
+
+
 def summarize(trades, capital, spy_bars, start_day):
     from .performance import report
     st = State("/dev/null")
@@ -295,6 +401,16 @@ def summarize(trades, capital, spy_bars, start_day):
     return rep
 
 
+def premium_params(cfg):
+    """The live STRATEGY=premium settings as simulate_premium parameters."""
+    return {"structure": {"both": "condor"}.get(cfg.premium_side, cfg.premium_side),
+            "short_delta": cfg.premium_short_delta, "dte": (cfg.premium_min_dte + cfg.premium_max_dte) // 2,
+            "width_pct": cfg.premium_max_width_pct, "take_profit": cfg.premium_take_profit,
+            "stop_x": cfg.premium_stop_x, "manage_dte": cfg.premium_manage_dte, "min_iv_rv": cfg.premium_min_iv_rv,
+            "min_credit_pct": cfg.premium_min_credit_pct, "risk_pct": cfg.premium_risk_pct,
+            "max_total_risk_pct": cfg.premium_max_total_risk_pct}
+
+
 def run(cfg, bars_by_symbol, capital, ablate=False):
     horizon = cfg.shadow_horizon
     events = precompute(bars_by_symbol, horizon)
@@ -305,6 +421,13 @@ def run(cfg, bars_by_symbol, capital, ablate=False):
     start_day = day_list[min(TRADE_AFTER, len(day_list) - 1)]
     spy = _real((bars_by_symbol.get("SPY") or {}).get("day"))
     funnel = {}
+    if cfg.strategy == "premium":
+        from .premium import asset_class
+        events = [e for e in events if cfg.premium_allow_stocks or asset_class(e["sym"]) == "index"]
+        trades = simulate_premium(cfg, events, capital, premium_params(cfg), earnings=earnings, funnel=funnel)
+        return {"strategy": "premium", "period": f"{start_day}..{day_list[-1]}", "params": premium_params(cfg),
+                "funnel": funnel, "symbols": sorted({e["sym"] for e in events}),
+                "results": summarize(trades, capital, spy, start_day), "trades": trades}
     trades, learner = simulate(cfg, events, capital, horizon, funnel=funnel, earnings=earnings)
     out = {"period": f"{start_day}..{day_list[-1]}", "train_only_days": TRADE_AFTER, "funnel": funnel,
            "symbols": sorted({e["sym"] for e in events}), "results": summarize(trades, capital, spy, start_day),
@@ -345,7 +468,7 @@ def main():
         with open(path) as f:
             bars.setdefault(sym.upper(), {})[interval] = json.load(f)
     out = run(cfg, bars, capital, ablate="--ablate" in sys.argv)
-    if "--save-exits" in sys.argv:
+    if "--save-exits" in sys.argv and cfg.strategy == "directional":
         state = State.load(cfg.state_path)
         state.data["exit_samples"] = [{"path": t["path"]} for t in out["trades"]
                                       if t["kind"] == "single" and t["path"]][-500:]

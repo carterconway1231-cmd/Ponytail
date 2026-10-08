@@ -17,6 +17,13 @@ def _int(name, default):
     return int(os.environ.get(name, default))
 
 
+def _choice(name, default, options):
+    value = os.environ.get(name, default).strip().lower()
+    if value not in options:
+        raise SystemExit(f"{name} must be one of {', '.join(options)}")
+    return value
+
+
 def _stop_type(value):
     value = value.strip().lower()
     if value not in ("stop_market", "stop_limit"):
@@ -67,6 +74,25 @@ class Config:
     warm_start_weight: float = 0.3     # how much one replayed historical day teaches vs a real trade
     shadow_weight: float = 0.3         # how much an untraded signal's outcome teaches vs a real trade
     shadow_horizon: int = 5            # trading days until an untraded signal is graded
+
+    # Strategy: "premium" sells defined-risk put credit spreads on index ETFs
+    # (the edge is implied > realized vol); "directional" is the factor-signal
+    # long-premium strategy (no measurable edge in the 14-stock study).
+    strategy: str = "premium"
+    premium_side: str = "put"           # put | call | both (both = iron condor as two verticals)
+    premium_short_delta: float = 0.20
+    premium_max_short_delta: float = 0.35
+    premium_min_dte: int = 30
+    premium_max_dte: int = 60
+    premium_take_profit: float = 0.50   # buy back once 50% of the credit is captured
+    premium_stop_x: float = 2.0         # buy back when the loss reaches 2x the credit
+    premium_manage_dte: int = 21        # close at 21 DTE regardless
+    premium_min_iv_rv: float = 1.0      # sell only when ATM IV >= realized vol x this
+    premium_min_credit_pct: float = 0.10  # credit >= 10% of width
+    premium_risk_pct: float = 0.10      # max loss per position as a fraction of equity
+    premium_max_total_risk_pct: float = 0.40
+    premium_max_width_pct: float = 0.01   # widest spread considered, as a fraction of spot
+    premium_allow_stocks: bool = False  # single-stock spreads were cost-killed in the backtest
 
     # Volatility & structure
     allow_spreads: bool = True         # debit verticals when IV is expensive (needs options level 3)
@@ -162,6 +188,21 @@ class Config:
             warm_start_weight=_float("WARM_START_WEIGHT", 0.3),
             shadow_weight=_float("SHADOW_WEIGHT", 0.3),
             shadow_horizon=_int("SHADOW_HORIZON", 5),
+            strategy=_choice("STRATEGY", "premium", ("premium", "directional")),
+            premium_side=_choice("PREMIUM_SIDE", "put", ("put", "call", "both")),
+            premium_short_delta=_float("PREMIUM_SHORT_DELTA", 0.20),
+            premium_max_short_delta=_float("PREMIUM_MAX_SHORT_DELTA", 0.35),
+            premium_min_dte=_int("PREMIUM_MIN_DTE", 30),
+            premium_max_dte=_int("PREMIUM_MAX_DTE", 60),
+            premium_take_profit=_float("PREMIUM_TAKE_PROFIT", 0.50),
+            premium_stop_x=_float("PREMIUM_STOP_X", 2.0),
+            premium_manage_dte=_int("PREMIUM_MANAGE_DTE", 21),
+            premium_min_iv_rv=_float("PREMIUM_MIN_IV_RV", 1.0),
+            premium_min_credit_pct=_float("PREMIUM_MIN_CREDIT_PCT", 0.10),
+            premium_risk_pct=_float("PREMIUM_RISK_PCT", 0.10),
+            premium_max_total_risk_pct=_float("PREMIUM_MAX_TOTAL_RISK_PCT", 0.40),
+            premium_max_width_pct=_float("PREMIUM_MAX_WIDTH_PCT", 0.01),
+            premium_allow_stocks=_bool("PREMIUM_ALLOW_STOCKS", False),
             allow_spreads=_bool("ALLOW_SPREADS", True),
             iv_rank_expensive=_float("IV_RANK_EXPENSIVE", 60),
             iv_rank_cheap=_float("IV_RANK_CHEAP", 30),

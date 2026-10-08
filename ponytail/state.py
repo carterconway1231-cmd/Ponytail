@@ -48,7 +48,10 @@ class State:
         return self.data["trade_log"]
 
     def open_premium(self):
-        return sum(p["entry_price"] * p["quantity"] * MULTIPLIER for p in self.positions.values())
+        """Dollars at risk across open positions: premium paid for longs and
+        debit spreads, max loss (width - credit) for credit spreads."""
+        return sum((p["max_loss"] if p.get("kind") == "credit_spread" else p["entry_price"] * MULTIPLIER)
+                   * p["quantity"] for p in self.positions.values())
 
     def realized_pnl_on(self, day):
         return sum(t["pnl"] for t in self.trade_log if t["closed_at"][:10] == day)
@@ -84,11 +87,28 @@ class State:
             **(extra or {}),
         }
 
+    def open_credit_spread(self, short_id, short_inst, long_id, long_inst, quantity, credit, mode, order_id=None,
+                           extra=None):
+        """Sold vertical, keyed by the short leg. entry_price is the credit
+        received per share; marks are the cost to buy the spread back."""
+        width = abs(short_inst["strike"] - long_inst["strike"])
+        self.positions[short_id] = {
+            "symbol": short_inst["symbol"], "type": short_inst["type"], "strike": short_inst["strike"],
+            "expiration": short_inst["expiration"], "quantity": quantity, "entry_price": credit,
+            "entry_signal": None, "direction": 1 if short_inst["type"] == "put" else -1,
+            "mode": mode, "opened_at": now_iso(), "open_order_id": order_id, "filled": mode == "paper",
+            "hwm": credit, "lwm": credit, "stop": None, "kind": "credit_spread",
+            "long_option_id": long_id, "long_strike": long_inst["strike"], "width": width,
+            "max_loss": round((width - credit) * MULTIPLIER, 2), **(extra or {}),
+        }
+
     def close_position(self, option_id, quantity, exit_price, reason):
         pos = self.positions[option_id]
         quantity = min(quantity, pos["quantity"])
-        pnl = (exit_price - pos["entry_price"]) * quantity * MULTIPLIER
-        premium = pos["entry_price"] * quantity * MULTIPLIER
+        credit = pos.get("kind") == "credit_spread"
+        # Long premium profits when the exit price rises; a credit spread when the buy-back cost falls.
+        pnl = (pos["entry_price"] - exit_price if credit else exit_price - pos["entry_price"]) * quantity * MULTIPLIER
+        premium = (pos["max_loss"] if credit else pos["entry_price"] * MULTIPLIER) * quantity
         if self.learner is not None:
             self.learner.learn_trade(pos.get("entry_signal"), pos["direction"], pnl, premium)
         sig = pos.get("entry_signal") or {}
@@ -98,8 +118,12 @@ class State:
             "pnl": round(pnl, 2), "r": round(pnl / premium, 3) if premium else None, "reason": reason,
             "entry_conviction": sig.get("conviction"), "entry_regime": sig.get("regime"),
             "agreeing_factors": sig.get("agree"), "kind": pos.get("kind", "single"),
-            "mfe": round((pos.get("hwm", pos["entry_price"]) - pos["entry_price"]) / pos["entry_price"], 3),
-            "mae": round((pos.get("lwm", pos["entry_price"]) - pos["entry_price"]) / pos["entry_price"], 3),
+            # Best/worst excursion as a fraction of the entry price (for credit spreads the
+            # favorable direction is a LOWER buy-back cost).
+            "mfe": round(((pos["entry_price"] - pos.get("lwm", pos["entry_price"])) if credit else
+                          (pos.get("hwm", pos["entry_price"]) - pos["entry_price"])) / pos["entry_price"], 3),
+            "mae": round(((pos["entry_price"] - pos.get("hwm", pos["entry_price"])) if credit else
+                          (pos.get("lwm", pos["entry_price"]) - pos["entry_price"])) / pos["entry_price"], 3),
             "held_days": (datetime.now(timezone.utc) - datetime.fromisoformat(pos["opened_at"])).days,
             "slippage_pct": round((pos["entry_price"] - pos["entry_mid"]) / pos["entry_mid"], 4)
             if pos.get("entry_mid") else None, "vol_regime": pos.get("vol_regime"),
