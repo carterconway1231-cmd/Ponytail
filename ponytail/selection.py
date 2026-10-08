@@ -22,7 +22,7 @@ MAX_CANDIDATES = 5
 
 def underlying_spot(market, symbol):
     bars = market.bars.get(symbol, {})
-    for interval in ("hour", "day"):
+    for interval in ("5minute", "hour", "day"):  # freshest first
         if bars.get(interval):
             return float(bars[interval][-1]["close_price"])
     return None

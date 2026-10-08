@@ -1,5 +1,52 @@
 {
-  "positions": {},
+  "positions": {
+    "26bada82-48d1-4a33-bb31-f53c78d413b5": {
+      "symbol": "SPY",
+      "type": "put",
+      "strike": 750.0,
+      "expiration": "2026-11-20",
+      "quantity": 4.0,
+      "entry_price": 0.9,
+      "entry_signal": null,
+      "direction": 1,
+      "mode": "paper",
+      "opened_at": "2026-10-08T13:54:58.329068+00:00",
+      "open_order_id": "paper-1-26bada82",
+      "filled": true,
+      "hwm": 0.9000000000000004,
+      "lwm": 0.9,
+      "stop": null,
+      "kind": "credit_spread",
+      "long_option_id": "b1b64ca5-8403-4dfc-86bf-56ca55571b2f",
+      "long_strike": 744.0,
+      "width": 6.0,
+      "max_loss": 510.0,
+      "entry_mid": 0.9
+    },
+    "c8063b48-198d-429e-9eeb-c9e16f499ffd": {
+      "symbol": "QQQ",
+      "type": "put",
+      "strike": 712.0,
+      "expiration": "2026-11-20",
+      "quantity": 4.0,
+      "entry_price": 1.1,
+      "entry_signal": null,
+      "direction": 1,
+      "mode": "paper",
+      "opened_at": "2026-10-08T13:55:58.405094+00:00",
+      "open_order_id": "paper-3-c8063b48",
+      "filled": true,
+      "hwm": 1.1050000000000004,
+      "lwm": 1.1,
+      "stop": null,
+      "kind": "credit_spread",
+      "long_option_id": "164ab2ef-7239-4260-a56d-9afdd01ec96a",
+      "long_strike": 705.0,
+      "width": 7.0,
+      "max_loss": 590.0,
+      "entry_mid": 1.1
+    }
+  },
   "trade_log": [],
   "learner": {
     "version": 2,
@@ -316,7 +363,10 @@
   },
   "iv_history": {
     "SPY": {
-      "2026-10-08": 0.1328
+      "2026-10-08": 0.1331
+    },
+    "QQQ": {
+      "2026-10-08": 0.1949
     }
   }
 }
