@@ -583,3 +583,68 @@ def test_compute_signals_end_to_end_on_real_bars(session):
     assert all("learned_weight" in f and f["why"] for f in out["factors"].values())
     assert session.learner.d["snapshots"][-1]["symbol"] == "SPY"
     assert session.learner.report()["factors"][0]["factor"] in fx.ALL_FACTORS
+
+
+# ---- warm start & context compaction -----------------------------------------------
+
+from ponytail import warmstart  # noqa: E402
+
+
+def test_evidence_decays_with_half_life(cfg):
+    lr = Learner({}, cfg, today=TODAY)
+    st = lr.d["factors"]["fvg"]["global"]
+    lr._add(st, 10.0, 0.0, TODAY - timedelta(days=90))
+    assert lr._view(st)[0] == pytest.approx(5.0)          # one half-life later: half the evidence
+    lr._add(st, 0.0, 4.0, TODAY - timedelta(days=200))   # out-of-order add never decays backwards
+    assert st["asof"] == (TODAY - timedelta(days=90)).isoformat()
+
+
+def test_warm_start_replays_without_lookahead(cfg, monkeypatch):
+    seen = []
+    real = warmstart.compute_factors
+
+    def spy(daily, hourly=None):
+        seen.append((daily[-1]["begins_at"][:10], hourly[-1]["begins_at"][:10] if hourly else None))
+        return real(daily, hourly)
+
+    monkeypatch.setattr(warmstart, "compute_factors", spy)
+    lr = Learner({}, cfg, today=TODAY)
+    out = warmstart.replay(lr, {"SPY": {"day": real_bars("day"), "hour": real_bars("hour")}})
+    days = [b["begins_at"][:10] for b in real_bars("day")]
+    assert out["days_replayed"] == len(days) - warmstart.MIN_HISTORY + 1 - cfg.shadow_horizon
+    # Each replayed day only ever saw bars up to that day, on both timeframes.
+    replayed = sorted(d for d in days[warmstart.MIN_HISTORY - 1:len(days) - cfg.shadow_horizon])
+    assert [d for d, _ in seen] == replayed
+    assert all(h is None or h == d for d, h in seen)
+    assert out["days_with_hourly_factors"] > 0
+    assert out["graded"] + out["flat_skipped"] == out["days_replayed"]
+    assert lr.d["warm_start"]["samples"] == out["graded"] > 0
+    assert set(out["historical_hit_rates"]) <= set(fx.ALL_FACTORS)
+    # Incremental: replaying the same history again adds nothing.
+    assert warmstart.replay(lr, {"SPY": {"day": real_bars("day")}})["days_replayed"] == 0
+
+
+def test_warm_start_tool_and_kickoff(session):
+    assert "Warm start needed for: SPY, QQQ" in session.kickoff()
+    session.market.ingest("get_equity_historicals", {}, mcp({"data": {"results": [
+        {"symbol": "SPY", "interval": "day", "bars": real_bars("day")}]}}))
+    out = session.warm_start()
+    assert out["graded"] > 0 and out["still_needed"] == ["QQQ"]
+    assert "Warm start needed for: QQQ." in session.kickoff()
+    assert json.load(open(session.cfg.state_path))["learner"]["warm_start"]["symbols"]["SPY"]
+
+
+def test_large_responses_saved_to_file_are_followed(tmp_path):
+    from ponytail.market import decode_tool_response
+    f = tmp_path / "mcp-Robinhood-get_equity_historicals-1.txt"
+    f.write_text(json.dumps({"data": {"results": [{"symbol": "SPY", "bars": []}]}}))
+    stub = f"Error: result (780,071 characters) exceeds maximum allowed tokens. Output has been saved to {f}.\nFormat: ..."
+    assert decode_tool_response(stub)["data"]["results"][0]["symbol"] == "SPY"
+
+
+def test_bar_dumps_are_replaced_with_a_summary_for_the_model(session):
+    resp = mcp({"data": {"results": [{"symbol": "SPY", "interval": "day", "bars": real_bars("day")}]}})
+    out = run(session.post_tool_use({"tool_name": RH + "get_equity_historicals", "tool_input": {}, "tool_response": resp}, "t", None))
+    text = out["hookSpecificOutput"]["updatedToolOutput"][0]["text"]
+    assert "SPY day: 206 bars" in text and len(text) < 300
+    assert len(session.market.bars["SPY"]["day"]) == 206   # full data still stored for the engine

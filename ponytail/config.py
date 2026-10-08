@@ -63,7 +63,8 @@ class Config:
     min_confluence: int = 4            # factors that must agree (score >= 0.25 in the trade direction)
     min_win_prob: float = 0.52         # learned P(win) floor once a conviction bucket has evidence
     min_calibration_trades: int = 10   # trades in a bucket before P(win)/EV gates apply
-    learn_decay: float = 0.97          # per-update forgetting; lower adapts faster to regime change
+    learn_half_life_days: float = 90.0  # evidence half-life; shorter adapts faster to regime change
+    warm_start_weight: float = 0.3     # how much one replayed historical day teaches vs a real trade
     shadow_weight: float = 0.3         # how much an untraded signal's outcome teaches vs a real trade
     shadow_horizon: int = 5            # trading days until an untraded signal is graded
 
@@ -112,7 +113,8 @@ class Config:
             min_confluence=_int("MIN_CONFLUENCE", 4),
             min_win_prob=_float("MIN_WIN_PROB", 0.52),
             min_calibration_trades=_int("MIN_CALIBRATION_TRADES", 10),
-            learn_decay=_float("LEARN_DECAY", 0.97),
+            learn_half_life_days=_float("LEARN_HALF_LIFE_DAYS", 90),
+            warm_start_weight=_float("WARM_START_WEIGHT", 0.3),
             shadow_weight=_float("SHADOW_WEIGHT", 0.3),
             shadow_horizon=_int("SHADOW_HORIZON", 5),
             model=os.environ.get("AGENT_MODEL", "claude-opus-5-5"),

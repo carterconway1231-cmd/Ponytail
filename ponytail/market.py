@@ -11,13 +11,26 @@ from datetime import datetime, timezone
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
+SAVED_OUTPUT_RE = re.compile(r"Output has been saved to (\S+?\.(?:txt|json))")
+
+
 def decode_tool_response(resp):
     """MCP tool responses reach hooks as a JSON string, a list of content
-    blocks, or a dict wrapping either. Return the decoded payload dict."""
+    blocks, or a dict wrapping either. Return the decoded payload dict.
+
+    Responses too large for the model's context (multi-year bar history)
+    arrive as a stub naming the file Claude Code saved them to; follow it."""
     if isinstance(resp, str):
         try:
             return decode_tool_response(json.loads(resp))
         except json.JSONDecodeError:
+            m = SAVED_OUTPUT_RE.search(resp)
+            if m:
+                try:
+                    with open(m.group(1)) as f:
+                        return decode_tool_response(f.read())
+                except OSError:
+                    return None
             return None
     if isinstance(resp, list):
         for block in resp:
@@ -129,6 +142,43 @@ class MarketCache:
             "processed_premium": _f(o.get("processed_premium")), "multiplier": _f(o.get("trade_value_multiplier")) or 100,
             "stop_price": _f(o.get("stop_price")), "time_in_force": o.get("time_in_force"),
         }
+
+    def summarize(self, tool, payload):
+        """Compact stand-in for bulky responses, so the model gets what it
+        needs to decide without spending context on raw rows. Returns None to
+        pass the original through."""
+        data = (payload or {}).get("data")
+        if not isinstance(data, dict):
+            return None
+        if tool == "get_equity_historicals":
+            lines = []
+            for r in data.get("results", []):
+                bars = [b for b in r.get("bars", []) if not b.get("interpolated")]
+                if bars:
+                    lines.append(f"{r['symbol']} {r.get('interval')}: {len(bars)} bars "
+                                 f"{bars[0]['begins_at'][:10]}..{bars[-1]['begins_at'][:10]}, "
+                                 f"last close {float(bars[-1]['close_price']):.2f}")
+                else:
+                    lines.append(f"{r.get('symbol')} {r.get('interval')}: no real bars (gap-fill only)")
+            missing = data.get("not_found")
+            return ("Bars stored for compute_signals / warm_start (raw rows omitted to save context):\n"
+                    + "\n".join(lines) + (f"\nnot found: {missing}" if missing else ""))
+        if tool == "get_option_instruments":
+            rows = [{"id": i["id"], "strike": float(i["strike_price"]), "type": i["type"],
+                     "exp": i["expiration_date"], "tradable": i.get("tradability") == "tradable"}
+                    for i in data.get("instruments", [])]
+            return json.dumps({"instruments": rows, "next": data.get("next")}, separators=(",", ":"))
+        if tool == "get_option_orders":
+            rows = []
+            for o in data.get("orders", []):
+                n = self.orders.get(o.get("id"), {})
+                rows.append({"id": o.get("id"), "state": o.get("state"), "type": o.get("type"),
+                             "trigger": o.get("trigger"), "side": n.get("side"), "effect": n.get("effect"),
+                             "option_id": n.get("option_id"), "qty": n.get("quantity"),
+                             "filled_qty": n.get("processed_quantity"), "stop_price": n.get("stop_price"),
+                             "created_at": o.get("created_at"), "chain": o.get("chain_symbol")})
+            return json.dumps({"orders": rows, "next": data.get("next")}, separators=(",", ":"))
+        return None
 
     def quote_age_minutes(self, option_id, now=None):
         updated = (self.quotes.get(option_id) or {}).get("updated_at")

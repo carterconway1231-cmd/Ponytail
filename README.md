@@ -60,8 +60,36 @@ No indicator is assumed to work. ICT concepts in particular have little rigorous
 - **After every closed trade**, each factor that had an opinion is graded. It's right if it pointed the way that paid. Bigger wins and losses (relative to premium) count more.
 - **After every signal, traded or not.** Each day's per-symbol read is saved, and 5 trading days later it's graded on whether the stock moved at least half an ATR in the factor's direction. That gives roughly 5–10× more learning data than trades alone, and the agent learns from vetoed setups too.
 - **By regime.** Each factor keeps separate track records for trending and ranging markets (by ADX). An ICT retracement entry may work in ranges and fail in trends, and the weights will reflect that.
-- **Bayesian and decaying.** Hit rates are Beta posteriors with a 10-trade prior, so a lucky streak can't swing them. Weight = (hit rate / 50%)², so a 70% factor counts about 2× and a 30% factor about 0.36×. Old evidence fades (`LEARN_DECAY`), so the model adapts when markets change.
+- **Bayesian and decaying.** Hit rates are Beta posteriors with a 10-trade prior, so a lucky streak can't swing them. Weight = (hit rate / 50%)², so a 70% factor counts about 2× and a 30% factor about 0.36×. Evidence has a 90-day half-life (`LEARN_HALF_LIFE_DAYS`), so recent months dominate and the model adapts when markets change.
 - **Calibrated odds.** Win rate and average win/loss in R are tracked per conviction level. Once there's enough history, the gate blocks setups that historically lose money.
+
+### Warm start
+
+On the first run for each symbol, the agent pre-trains the learner on history: 3 years of daily bars and about 6 months of hourly bars, which is as far back as Robinhood serves hourly data. It's a walk-forward replay. Each past day's factors are computed only from bars up to that day, then graded on the next 5 days, the same way untraded signals are graded live. Replayed days count `WARM_START_WEIGHT` each and decay with the same half-life, so the learner starts from evidence rather than a blank 50%. The replay is incremental, so new symbols are picked up automatically and nothing is double-counted.
+
+Robinhood serves only about 6 months of hourly bars, so the hourly ICT and order-flow factors get far fewer warm-start samples than the daily factors. Treat their early weights as provisional.
+
+You can also run it offline from saved bars (JSON files named `SPY_day.json`, `SPY_hour.json`, …):
+
+```bash
+python -m ponytail.warmstart path/to/bars/
+```
+
+Example from SPY and QQQ, Oct 2023 – Oct 2026 (1,254 replayed days, 960 graded):
+
+| Factor | Trending markets | Ranging markets | Weight (trend / range) |
+|---|---|---|---|
+| trend | 53.4% | 60.0% | 1.39 / 1.11 |
+| liquidity_sweep | 33.3% (15) | 67.9% (28) | 1.00 / 1.36 |
+| fvg | 55.4% | 47.6% | 1.11 / 0.88 |
+| order_flow | 51.9% | 51.6% | 0.99 / 1.02 |
+| rsi | 46.1% | 42.8% | 0.77 / 0.88 |
+| macd | 40.6% | 45.1% | 0.85 / 0.73 |
+| vwap | 50.8% | 37.9% | 0.78 / 0.53 |
+
+Counts in parentheses are graded samples. Weights reflect the last few months more than the raw 3-year hit rates.
+
+Read results like these with care. The market rose through most of this window, which flatters bullish factors, and the ICT samples are small. That's exactly why the weights keep adapting after the warm start.
 
 `learning_report` (an agent tool, also stored in `agent_state.json`) shows each factor's hit rate and weight by regime, plus the calibration table.
 

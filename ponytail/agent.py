@@ -22,6 +22,7 @@ from . import protect, risk
 from .market import MarketCache, decode_tool_response
 from .factors import compute_factors
 from .learner import Learner
+from .warmstart import replay
 from .state import State, now_iso
 
 log = logging.getLogger("ponytail")
@@ -36,7 +37,8 @@ RH_READ_TOOLS = {
     "get_option_positions", "get_option_orders", "search",
 }
 RH_WRITE_TOOLS = {"review_option_order", "place_option_order", "cancel_option_order"}
-LOCAL_TOOLS = {"compute_signals", "propose_option_trade", "review_positions", "portfolio_status", "learning_report"}
+LOCAL_TOOLS = {"compute_signals", "propose_option_trade", "review_positions", "portfolio_status", "learning_report",
+               "warm_start"}
 
 ALLOWED_TOOLS = (
     {RH + t for t in RH_READ_TOOLS | RH_WRITE_TOOLS}
@@ -61,7 +63,7 @@ class TradingSession:
         self.cfg = cfg
         self.today = today or date.today()
         self.state = State.load(cfg.state_path)
-        self.learner = self.state.learner = Learner(self.state.data["learner"], cfg)
+        self.learner = self.state.learner = Learner(self.state.data["learner"], cfg, today=self.today)
         self.market = MarketCache()
         self.signals = {}  # symbol -> {votes, score, decision, rsi}
         self.plans = {}    # option_id -> approved open plan
@@ -133,6 +135,21 @@ class TradingSession:
         return {"mode": self.mode, "broker_events": events, "positions": rows,
                 "circuit_breakers": risk.circuit_breakers(self.cfg, self.state, self.market, self.today)}
 
+    def needs_warm_start(self):
+        return [sym for sym in self.cfg.symbols if sym not in self.learner.d["warm_start"]["symbols"]]
+
+    def warm_start(self):
+        todo = {sym: bars for sym, bars in self.market.bars.items() if "day" in bars}
+        if not todo:
+            return {"error": "no bars cached; fetch long history with get_equity_historicals first"}
+        summary = replay(self.learner, todo)
+        self.state.save()
+        self.audit("warm_start", graded=summary["graded"], symbols=summary["symbols"])
+        top = self.learner.report()["factors"]
+        return {**summary, "still_needed": self.needs_warm_start(),
+                "learned_weights": [{k: r[k] for k in ("factor", "hit_rate_trend", "hit_rate_range",
+                                                       "weight_trend", "weight_range")} for r in top]}
+
     def portfolio_status(self):
         day = self.today.isoformat()
         log_ = self.state.trade_log
@@ -140,6 +157,7 @@ class TradingSession:
             "mode": self.mode, "account_number": self.cfg.account_number, "today": day,
             "universe": self.cfg.symbols,
             "learning": {k: self.learner.d[k] for k in ("trades_learned", "shadow_learned")},
+            "needs_warm_start": self.needs_warm_start(),
             "open_positions": self.state.positions, "open_premium": round(self.state.open_premium(), 2),
             "realized_pnl_today": round(self.state.realized_pnl_on(day), 2),
             "realized_pnl_all_time": round(sum(t["pnl"] for t in log_), 2), "closed_trades": len(log_),
@@ -210,10 +228,14 @@ class TradingSession:
         short = name[len(RH):]
         args = input_data.get("tool_input") or {}
         resp = input_data.get("tool_response")
-        if short in RH_READ_TOOLS:
-            self.market.ingest(short, args, resp)
-            return {}
         payload = decode_tool_response(resp) or {}
+        if short in RH_READ_TOOLS:
+            self.market.ingest(short, args, payload)
+            summary = self.market.summarize(short, payload)
+            if summary is None:
+                return {}
+            out = [{"type": "text", "text": summary}] if isinstance(resp, list) else summary
+            return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "updatedToolOutput": out}}
         data = payload.get("data")
         if not data or payload.get("error"):
             self.audit(f"{short}_failed", request=args, response=str(resp)[:500])
@@ -297,11 +319,17 @@ class TradingSession:
         async def learning_report(args):
             return _text(s.learner.report())
 
+        @tool("warm_start", "Pre-train the factor learner by walk-forward replay of all long bar history fetched "
+              "this run (no lookahead). Incremental: only days not replayed before are added.", {})
+        async def warm_start(args):
+            return _text(s.warm_start())
+
         @tool("portfolio_status", "Mode (paper/live), risk limits, ensemble weights, agent positions and P&L.", {})
         async def portfolio_status(args):
             return _text(s.portfolio_status())
 
-        return create_sdk_mcp_server("ponytail", tools=[compute_signals, propose_option_trade, review_positions, portfolio_status, learning_report])
+        return create_sdk_mcp_server("ponytail", tools=[compute_signals, propose_option_trade, review_positions, portfolio_status, learning_report,
+                                                       warm_start])
 
     def options(self):
         servers = {"ponytail": self.local_server()}
@@ -328,13 +356,18 @@ class TradingSession:
         )
 
     def kickoff(self):
-        day_start = (self.today - timedelta(days=420)).isoformat() + "T00:00:00Z"
-        hour_start = (self.today - timedelta(days=30)).isoformat() + "T00:00:00Z"
+        ago = lambda days: (self.today - timedelta(days=days)).isoformat() + "T00:00:00Z"  # noqa: E731
+        need = self.needs_warm_start()
+        warm = (f"\nWarm start needed for: {', '.join(need)}. Before computing signals, fetch long history "
+                f"for those symbols: interval='day' with start_time='{ago(1095)}', and interval='hour' with "
+                f"start_time='{ago(180)}' (if the hourly request is rejected as too large, retry with "
+                f"'{ago(90)}'). Then call warm_start once. That history also covers today's signals for "
+                f"those symbols, so don't refetch them.") if need else ""
         return (
             f"Run today's trading cycle. Date: {self.today.isoformat()}. Mode: {self.mode.upper()}.\n"
             f"Account: {self.cfg.account_number}. Universe: {', '.join(self.cfg.symbols)}.\n"
             f"For signals, fetch both timeframes for the whole universe: interval='day' with "
-            f"start_time='{day_start}', and interval='hour' with start_time='{hour_start}'."
+            f"start_time='{ago(420)}', and interval='hour' with start_time='{ago(30)}'." + warm
         )
 
 
@@ -359,7 +392,7 @@ Cycle:
    d. For each PLACE_STOP row: place_option_order with exactly the stop_order arguments given (plus account_number).
    e. For each RAISE_STOP row: cancel_option_order the old stop (cancel_stop_first), then place the new stop_order.
    f. Never leave a held position without a resting stop. While any position is unprotected, the code rejects every new entry.
-2. Fetch bars for the whole universe: one get_equity_historicals call with interval='day' and one with interval='hour' (start times are in the kickoff message). Then run compute_signals for each symbol, and call learning_report once to see which factors are currently earning their weight.
+2. If the kickoff says a warm start is needed, do that first (long-history fetch, then warm_start), and mention the historical hit rates it found in your report. Then fetch bars for the rest of the universe: one get_equity_historicals call with interval='day' and one with interval='hour' (start times are in the kickoff message). Then run compute_signals for each symbol, and call learning_report once to see which factors are currently earning their weight.
 3. If review_positions or portfolio_status lists any circuit_breakers, open nothing new this run. Report why and finish.
 4. For each BUY/SELL signal you don't veto:
    a. get_earnings_results for the symbol (ETFs return none, which is fine).

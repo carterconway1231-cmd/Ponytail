@@ -7,9 +7,9 @@ Factor weights (Bayesian, regime-aware)
   toward the global one until it has its own evidence, and every posterior
   starts at 50% with PRIOR_STRENGTH pseudo-observations, so a few lucky
   trades can't swing it. Weight = (hit_rate / 0.5)^2: a 50% factor counts 1x,
-  70% counts ~2x, 30% fades to ~0.36x. Old evidence decays (LEARN_DECAY per
-  update), so the model tracks regime change instead of averaging over all
-  history.
+  70% counts ~2x, 30% fades to ~0.36x. Evidence decays with a time half-life
+  (LEARN_HALF_LIFE_DAYS), so recent months dominate and the model tracks
+  regime change instead of averaging over all history.
 
 What it learns from
   * Every closed trade (weight 1.0), with evidence scaled by the size of the
@@ -24,6 +24,8 @@ Win probability and expected value
   Beta posterior of win rate plus average win/loss returns, so the gate can
   say "setups like this have won 41% of the time with avg R -0.2: skip".
 """
+from datetime import date
+
 from .factors import ALL_FACTORS
 
 PRIOR_A = PRIOR_B = 5.0           # 50% prior worth 10 observations
@@ -40,12 +42,17 @@ def bucket_for(conviction):
 
 
 def _empty():
-    return {"A": 0.0, "B": 0.0}
+    return {"A": 0.0, "B": 0.0, "asof": None}
+
+
+def _as_date(day):
+    return day if isinstance(day, date) else date.fromisoformat(str(day)[:10])
 
 
 class Learner:
-    def __init__(self, data, cfg):
+    def __init__(self, data, cfg, today=None):
         self.cfg = cfg
+        self.today = today or date.today()
         self.d = data
         self.d.setdefault("version", 2)
         self.d.setdefault("factors", {})
@@ -58,15 +65,39 @@ class Learner:
         self.d.setdefault("snapshots", [])
         self.d.setdefault("trades_learned", 0)
         self.d.setdefault("shadow_learned", 0)
+        self.d.setdefault("warm_start", {"symbols": {}, "samples": 0})
+
+    # ---- time decay ------------------------------------------------------------
+
+    def _view(self, st):
+        """Evidence (A, B) decayed to today, without mutating."""
+        if not st.get("asof"):
+            return st["A"], st["B"]
+        f = 0.5 ** (max(0, (self.today - _as_date(st["asof"])).days) / self.cfg.learn_half_life_days)
+        return st["A"] * f, st["B"] * f
+
+    def _add(self, st, a, b, day):
+        """Decay existing evidence to `day`, then add. Never decays backwards."""
+        day = _as_date(day)
+        if st.get("asof"):
+            elapsed = (day - _as_date(st["asof"])).days
+            if elapsed > 0:
+                f = 0.5 ** (elapsed / self.cfg.learn_half_life_days)
+                st["A"] *= f
+                st["B"] *= f
+        if not st.get("asof") or day > _as_date(st["asof"]):
+            st["asof"] = day.isoformat()
+        st["A"] += a
+        st["B"] += b
 
     # ---- weights & scoring ---------------------------------------------------
 
     def hit_rate(self, factor, regime):
         st = self.d["factors"][factor]
-        g = st["global"]
-        m_global = (PRIOR_A + g["A"]) / (PRIOR_A + PRIOR_B + g["A"] + g["B"])
-        r = st.get(regime) or _empty()
-        return (PRIOR_STRENGTH * m_global + r["A"]) / (PRIOR_STRENGTH + r["A"] + r["B"])
+        ga, gb = self._view(st["global"])
+        m_global = (PRIOR_A + ga) / (PRIOR_A + PRIOR_B + ga + gb)
+        ra, rb = self._view(st.get(regime) or _empty())
+        return (PRIOR_STRENGTH * m_global + ra) / (PRIOR_STRENGTH + ra + rb)
 
     def weight(self, factor, regime):
         return max(0.05, min(3.0, (self.hit_rate(factor, regime) / 0.5) ** 2))
@@ -103,7 +134,8 @@ class Learner:
 
     def estimate(self, conviction):
         c = self.d["calibration"][bucket_for(conviction)]
-        p = (PRIOR_A + c["A"]) / (PRIOR_A + PRIOR_B + c["A"] + c["B"])
+        ca, cb = self._view(c)
+        p = (PRIOR_A + ca) / (PRIOR_A + PRIOR_B + ca + cb)
         avg_win = c["win_r"] / c["wins"] if c["wins"] else None
         avg_loss = c["loss_r"] / c["losses"] if c["losses"] else None
         ev = p * avg_win + (1 - p) * avg_loss if avg_win is not None and avg_loss is not None else None
@@ -112,10 +144,9 @@ class Learner:
 
     # ---- learning ------------------------------------------------------------
 
-    def _grade(self, factors, regime, outcome_sign, evidence_scale):
-        """Update every factor that had an opinion. outcome_sign: +1 if the
-        underlying/bet went up-direction-right, i.e. compare sign(score)."""
-        gamma = self.cfg.learn_decay
+    def _grade(self, factors, regime, outcome_sign, evidence_scale, day):
+        """Grade every factor that had an opinion: right if its sign matches
+        outcome_sign (+1 = the way up paid / price rose)."""
         for name, f in factors.items():
             s = f["score"]
             if abs(s) < MIN_EVIDENCE_SCORE or name not in self.d["factors"]:
@@ -124,14 +155,11 @@ class Learner:
             e = abs(s) * evidence_scale
             for key in ("global", regime):
                 st = self.d["factors"][name].setdefault(key, _empty())
-                st["A"] = st["A"] * gamma + (e if correct else 0.0)
-                st["B"] = st["B"] * gamma + (0.0 if correct else e)
+                self._add(st, e if correct else 0.0, 0.0 if correct else e, day)
 
-    def _calibrate(self, conviction, won, weight, r=None):
+    def _calibrate(self, conviction, won, weight, day, r=None):
         c = self.d["calibration"][bucket_for(conviction)]
-        gamma = self.cfg.learn_decay
-        c["A"] = c["A"] * gamma + (weight if won else 0.0)
-        c["B"] = c["B"] * gamma + (0.0 if won else weight)
+        self._add(c, weight if won else 0.0, 0.0 if won else weight, day)
         if r is not None:
             c["n_trades"] += 1
             if won:
@@ -141,7 +169,7 @@ class Learner:
                 c["losses"] += 1
                 c["loss_r"] += r
 
-    def learn_trade(self, entry, direction, pnl, premium):
+    def learn_trade(self, entry, direction, pnl, premium, day=None):
         """entry: the signal snapshot stored on the position at open."""
         if not entry or "factors" not in entry:
             return
@@ -151,8 +179,9 @@ class Learner:
         # the bet's direction on a win, the opposite on a loss.
         outcome = direction if won else -direction
         scale = max(0.5, min(2.0, abs(r) / 0.3))
-        self._grade(entry["factors"], entry.get("regime", "range"), outcome, scale)
-        self._calibrate(entry.get("conviction", 0.0), won, 1.0, r)
+        day = day or self.today
+        self._grade(entry["factors"], entry.get("regime", "range"), outcome, scale, day)
+        self._calibrate(entry.get("conviction", 0.0), won, 1.0, day, r)
         self.d["trades_learned"] += 1
 
     def record_snapshot(self, symbol, day, analysis, decision):
@@ -171,16 +200,17 @@ class Learner:
             if s["symbol"] != symbol:
                 keep.append(s)
                 continue
-            later = [c for d_, c in dated if d_ > s["date"]]
+            later = [(d_, c) for d_, c in dated if d_ > s["date"]]
             if len(later) < self.cfg.shadow_horizon:
                 keep.append(s)  # horizon not reached yet
                 continue
-            move = (later[self.cfg.shadow_horizon - 1] - s["close"]) / s["atr"] if s["atr"] else 0
+            outcome_day, outcome_close = later[self.cfg.shadow_horizon - 1]
+            move = (outcome_close - s["close"]) / s["atr"] if s["atr"] else 0
             if abs(move) >= 0.5:
-                self._grade(s["factors"], s["regime"], 1 if move > 0 else -1, self.cfg.shadow_weight)
+                self._grade(s["factors"], s["regime"], 1 if move > 0 else -1, self.cfg.shadow_weight, outcome_day)
                 if s["decision"] in ("BUY", "SELL"):
                     won = (move > 0) == (s["decision"] == "BUY")
-                    self._calibrate(s["conviction"], won, self.cfg.shadow_weight)
+                    self._calibrate(s["conviction"], won, self.cfg.shadow_weight, outcome_day)
                 self.d["shadow_learned"] += 1
                 labeled += 1
         self.d["snapshots"] = keep
@@ -192,7 +222,7 @@ class Learner:
         rows = []
         for name in ALL_FACTORS:
             st = self.d["factors"][name]
-            n = st["global"]["A"] + st["global"]["B"]
+            n = sum(self._view(st["global"]))
             rows.append({"factor": name, "evidence": round(n, 1),
                          "hit_rate_trend": round(self.hit_rate(name, "trend"), 3),
                          "hit_rate_range": round(self.hit_rate(name, "range"), 3),
@@ -202,4 +232,6 @@ class Learner:
         calib = {b: {**self.estimate((lo + hi) / 2 if hi < 1 else 0.7), "range": f"{lo:.2f}-{min(hi, 1):.2f}"}
                  for lo, hi, b in BUCKETS}
         return {"trades_learned": self.d["trades_learned"], "signals_learned": self.d["shadow_learned"],
+                "warm_start": {"samples": self.d["warm_start"]["samples"],
+                               "symbols": self.d["warm_start"]["symbols"]},
                 "pending_signal_labels": len(self.d["snapshots"]), "factors": rows, "calibration": calib}
