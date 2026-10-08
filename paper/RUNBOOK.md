@@ -35,7 +35,13 @@ saved an oversized result to), then `$D ingest <tool> <file> '<tool input json>'
    - Pick the top candidate unless the context argues against it;
      `$D call propose_credit_spread '{...short, long, quantity=max_quantity, limit_credit=suggested_limit_credit, thesis}'`.
    - If approved: `$D order '<order>'` (paper fill at the limit).
-6. `$D call portfolio_status` / `$D call performance` for the summary.
-7. Commit `paper/agent_state.json` (message: `paper cycle YYYY-MM-DD HH:MM ET: <one line>`) and push.
-8. Quotes must be fresh (< 30 min) for an approval; the pre-market quotes are the prior close.
-9. Report to the user only if something happened (open, close, breaker, error); otherwise stay quiet.
+6. **Bandz forward test (morning run only, no trading):** `get_equity_historicals` symbols SPY,QQQ,
+   interval `5minute`, start 4 calendar days before the previous trading day's date (00:00Z) and
+   end at today 00:00Z → `python -m ponytail.bandz_shadow <saved response path>`. It logs the
+   previous trading day's CISD / 1H SMT / first-FVG signals with their outcomes to
+   `paper/bandz_shadow.json` (include it in the commit). If the response comes back inline rather
+   than saved to a file, write it to `.ponytail_run/bandz.json` first.
+7. `$D call portfolio_status` / `$D call performance` for the summary.
+8. Commit `paper/agent_state.json` (and `paper/bandz_shadow.json`) (message: `paper cycle YYYY-MM-DD HH:MM ET: <one line>`) and push.
+9. Quotes must be fresh (< 30 min) for an approval; the pre-market quotes are the prior close.
+10. Report to the user only if something happened (open, close, breaker, error); otherwise stay quiet.

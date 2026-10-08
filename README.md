@@ -307,9 +307,9 @@ python -m ponytail.bandz_study DIR   # DIR holds SPY_5minute.json and QQQ_5minut
 
 | Signal | Trades | Edge vs null (R/trade, net) | Verdict |
 |---|---|---|---|
-| CISD → −2 objective, SPY | 154 | +0.03 (t 0.3); halves −0.11 / +0.14 | none |
-| CISD → −2 objective, QQQ | 175 | −0.10 (t −1.6); negative in both halves | worse than random |
-| CISD → −1 / −2.5 / −4 | 126–194 | −0.12 to +0.03 | none |
+| CISD → −2 objective, SPY | 110 | +0.10 (t 1.1); halves +0.01 / +0.22 | not significant |
+| CISD → −2 objective, QQQ | 123 | −0.09 (t −1.1); negative in both halves | worse than random |
+| CISD → −1 / −2.5 / −4 | 95–136 | −0.14 to +0.07 | none |
 | SMT 15m, 2R bracket | ~1,680 | −0.05 / −0.01 | none |
 | SMT 1H, 2R bracket | ~540 | −0.02 / +0.05 | none |
 | SMT 1H, next-hour return | 553 | +2–3 bp (t ≈ 2.1 per signal, **1.5 by day**) | not significant |
@@ -320,7 +320,8 @@ python -m ponytail.bandz_study DIR   # DIR holds SPY_5minute.json and QQQ_5minut
 - **About 30 variants were tested,** so one or two |t| ≈ 2 results are expected from chance alone.
 - **Bearish 1H SMT** looked strong from mid-June to October (t 3–4) but showed nothing from late February to mid-June (t ≈ 0). That's the same "worked in one half only" pattern the directional study found.
 - **Hit rates track the bracket geometry.** For example, the −2 target hits about 30% of the time when it sits 2–3× the stop distance away, which is what a random walk would give.
-- **Conclusion:** none of these signals is wired into the agent. If you want to keep tracking the bearish SMT, it could be shadow-logged live and re-tested once more data accrues.
+- **Conclusion:** none of these signals is wired into the agent's trading.
+- **Forward test.** `python -m ponytail.bandz_shadow RESPONSE.json` logs each completed day's signals and their bracket outcomes to `paper/bandz_shadow.json`. Nothing is traded. The morning paper run does this for the prior day, so the log builds an out-of-sample record that can be re-tested against these numbers.
 
 ## Setup
 

@@ -1292,3 +1292,19 @@ def test_bandz_first_fvg_and_smt():
     b = bz.Series(five_min([(50, 51, 49, 50)] * 3 + [(50, 50.8, 49.5, 50)] * 3))
     ev = bz.detect_smt(a, b, 15)
     assert [(e["dir"], e["bar"], e["anchor"]) for e in ev] == [(-1, 3, 101.5)]
+
+
+def test_bandz_shadow_logs_a_day_idempotently(tmp_path, capsys):
+    from ponytail import bandz_shadow
+    bars = json.load(open(os.path.join(FIX, "spy_5m_2d.json")))
+    resp = tmp_path / "resp.json"
+    resp.write_text(json.dumps({"data": {"results": [{"symbol": "SPY", "interval": "5minute", "bars": bars}]}}))
+    log = tmp_path / "shadow.json"
+    for _ in range(2):
+        bandz_shadow.main([str(resp), "--day", "2026-02-23", "--log", str(log)])
+    logged = json.load(open(log))
+    keys = [k for k in logged if k.startswith("SPY|cisd_-2|")]
+    assert keys and len(keys) == len(set(keys))
+    row = logged[keys[0]]
+    assert row["day"] == "2026-02-23" and row["dir"] == 1 and row["outcome"] in ("target", "stop", "eod")
+    assert all(r["day"] == "2026-02-23" for r in logged.values())

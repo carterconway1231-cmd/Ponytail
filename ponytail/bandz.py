@@ -203,7 +203,9 @@ def detect_cisd(s, liquidity_min=60, competition_min=240):
         for d in (1, -1):
             bull = d == 1
             keep = []
-            for cd in cands[d]:
+            # The Pine walks candidates newest-to-oldest and its snapshot keeps the last
+            # write, so several confirmations on one bar collapse to one (the oldest).
+            for cd in reversed(cands[d]):
                 expired = p - cd["start"] > CANDIDATE_LIFETIME
                 cisd_expired = cd["stage"] == 0 and p - cd["start"] > CISD_LIFETIME
                 swing_expired = cd["stage"] == 1 and cd["confirm_bar"] is not None and p - cd["confirm_bar"] > SWING_BREAK_BARS
@@ -221,6 +223,8 @@ def detect_cisd(s, liquidity_min=60, competition_min=240):
                             sdisp = max(0.0, ((s.h[p] if bull else s.l[p]) - cd["swing"]) * d) / norm
                             score = (IMPORTANCE * 100 + cd["quality"] * 15 + depth * 12 + disp * 10 + sdisp * 8
                                      + rng / norm * 5)
+                            if events and events[-1]["p"] == p and events[-1]["dir"] == d:
+                                events.pop()
                             events.append({"dir": d, "p": p, "signal_bar": cur, "a0": cd["swing"],
                                            "a1": cd["extreme"], "cisd": cd["cisd"], "ref": cd["ref"],
                                            "sweep_bar": cd["extreme_bar"], "score": round(score, 1),
@@ -228,7 +232,7 @@ def detect_cisd(s, liquidity_min=60, competition_min=240):
                             consumed[d].add(cd["ref_key"])
                         continue  # removed once the swing breaks
                 keep.append(cd)
-            cands[d] = keep
+            cands[d] = keep[::-1]
     return events
 
 
