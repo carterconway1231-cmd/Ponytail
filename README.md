@@ -21,11 +21,13 @@ trades through Robinhood's official MCP server.
           every signal & closed trade ──► factor weights, odds and exits adapt
 ```
 
-**The honest headline.** On SPY and QQQ from mid-2024 to Oct 2026 the backtest made
-**zero trades with default settings**, while SPY returned +42.8%. Every way of loosening
-the gates lost money (details under [Backtest](#backtest)). That's the system working:
-it only trades when its measured edge pays for the option premium, and on index ETFs
-in a strong bull market it never found one. Paper-trade it before anything else.
+**The honest headline.** Tested on 12 large-cap stocks plus SPY/QQQ (Jun 2024 – Oct 2026),
+**none of the 16 factors predicts 5-day direction better than a coin flip**, and every
+entry setting that looked profitable in the first half failed to hold up in the second
+(see [Edge study](#edge-study)). The default gates mostly keep the agent out of the
+market, which is the right call given that evidence. Holding the stocks returned far
+more. Paper-trade it, rerun the study as data accrues, and don't loosen the gates to
+"make it trade."
 
 ## How it decides
 
@@ -96,7 +98,7 @@ No indicator is assumed to work. ICT concepts in particular have little rigorous
 
 - **After every closed trade**, each factor that had an opinion is graded. It's right if it pointed the way that paid. Bigger wins and losses (relative to premium) count more.
 - **After every signal, traded or not.** Each day's read is graded 5 trading days later. That gives roughly 5–10× more data than trades alone, and the agent learns from vetoed setups too.
-- **Drift-adjusted.** Factors are graded on the move beyond the trailing 60-day trend, not raw direction. In a bull market every bullish read "wins" on raw direction; this asks whether a factor added information beyond the trend. Win-rate calibration still uses the raw move, because that's what options pay on.
+- **Drift-adjusted.** Factors are graded on the move beyond the market's long-run pace: SPY's trailing one-year average daily return, scaled to the stock's price. In a bull market every bullish read "wins" on raw direction; this removes that tilt. It deliberately does not use the stock's own recent trend. That version (used briefly) mechanically marked trend signals wrong and mean-reversion signals right, because strong trends rarely keep their full pace. In the study below it produced a spurious "RSI edge". Win-rate calibration uses the raw move, because that's what options pay on.
 - **By regime.** Each factor keeps separate track records for trending and ranging markets (by ADX).
 - **Bayesian and decaying.** Hit rates are Beta posteriors with a 10-observation prior, so a lucky streak can't swing them. Weight = (hit rate / 50%)². Evidence has a 90-day half-life (`LEARN_HALF_LIFE_DAYS`).
 - **Exits too.** Each trade's best and worst point is recorded. The tuner replays closed trades and backtest price paths across take-profit/stop pairs, and adopts a better pair only with `MIN_EXIT_SAMPLES` of evidence and a clear margin. The stop can never exceed 50%.
@@ -223,17 +225,32 @@ This is a walk-forward replay with a fresh learner trained only on what was know
 - Fills cost 1.5% of the option price per side beyond mid.
 - Exits happen at daily closes.
 
-Results on SPY and QQQ (trading Jun 2024 – Oct 2026, $3,000 capital; SPY buy-and-hold +42.8%):
+Earnings dates (`SYM_earnings.json`) block entries whose expiry would span a report, like the live gate. Robinhood returns about 2 years of dates; earlier quarters are backfilled at 91-day steps with a ±7-day margin.
 
-| Setting | Trades | Win rate | P&L | Profit factor |
-|---|---|---|---|---|
-| Defaults | 0 | – | $0 | – |
-| `MIN_CONFLUENCE=3` | 0 | – | $0 | – |
-| `MIN_CONTRACT_EV=-0.10` | 3 | 0% | −$88 | 0.00 |
-| confluence 3, threshold 0.2, EV −20% | 11 | 36% | −$142 | 0.30 |
-| no EV gate at all | 12 | 33% | −$160 | 0.24 |
+## Edge study
 
-With defaults, 88% of symbol-days were HOLD (too little confluence), and the rest failed the EV gate or the risk budget. The gates kept the account out of a strategy that lost money whenever it was allowed to trade. Directional long premium on index ETFs is a hard way to beat simply holding them. Widen the universe (the scanner, single stocks with more dispersion) and backtest again before trusting any setting.
+```bash
+python -m ponytail.study path/to/bars/ [--split 2025-08-15] [--capital 3000]
+```
+
+The study answers two questions honestly before you trust or loosen anything.
+
+1. **Does any factor predict?** It measures each factor's 5-day directional hit rate on raw moves (what options pay on) and on market-drift-adjusted moves (what the learner grades), separately for each half. The z\* statistic deflates naive t-stats about 3.9× for overlapping windows and correlated stocks.
+2. **Do entry settings hold up out of sample?** It runs a 27-setting grid, scores each setting on the first half only, and reports the best one on the unseen second half.
+
+**Results.** The study covered AAPL, MSFT, NVDA, AMD, TSLA, META, AMZN, GOOGL, MU, PLTR, COIN and NFLX, plus SPY and QQQ: 8,850 symbol-days, trading Jun 2024 – Oct 2026, split on Aug 15, 2025.
+
+- **Factors.** On raw 5-day moves, every factor's hit rate is between about 47% and 53%, and the largest |z\*| in either half is 1.3. That's noise: no factor, ICT or classic, has a demonstrable edge at this horizon on these names.
+- **Settings.** 25 of 27 settings were profitable in the first half (a broad rally); only 2 of the 17 that traded were profitable in the second.
+  - The best first-half setting (confluence 3, threshold 0.15, EV ≥ 0) made +$858 on 37 trades. Most of that, +$1,193, came from PLTR calls during PLTR's run-up.
+  - The same setting made +$142 on 32 trades in the second half (+4.7% on $3,000).
+  - Over that second half, SPY returned +21.1% and an equal-weight holding of the 12 stocks +83.7%.
+  - Which trades won flipped between halves: calls carried the first, puts the second.
+- **Defaults.** 10 trades in the first half (+$106) and none in the second. 72% of symbol-days were HOLD; most of the rest failed the EV gate or the earnings blackout.
+
+**Takeaway.** The engine works as designed: it measures, gates and sizes correctly, and it declines to trade without evidence. But the signals it's built on don't carry a measurable short-term edge on liquid large caps. Directional long premium also has to beat time decay and the volatility premium on top of being right. Keep the defaults, paper-trade, and rerun the study as data accrues. If you want an options strategy with a documented structural edge, the place to look is the other side of the volatility premium: defined-risk premium selling. That would be a deliberate change to this agent's rules, which currently forbid short premium.
+
+The ablation (`--ablate`) and exit tuner work, but with only a few dozen trades their results aren't meaningful yet.
 
 ## Setup
 
@@ -269,7 +286,7 @@ An example cron schedule, with times in ET:
 
 ## Known limitations
 
-- **No proven edge yet.** See [Backtest](#backtest). Paper-trade until the go-live checklist passes.
+- **No proven edge.** See [Edge study](#edge-study). Paper-trade until the go-live checklist passes.
 - **Gap risk.** Stops limit losses but can't guarantee a price, and `stop_market` stops only exist from the first run each day.
 - **The EV model is simple.** It uses two scenarios with constant IV, so it ignores skew, vol crush and early exercise.
 - **Hourly history is short.** Robinhood serves about 6 months, so the hourly factors have small samples.

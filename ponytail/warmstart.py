@@ -31,7 +31,9 @@ INDEX_SYMBOLS = {"VIX", "SPX", "NDX", "DJI", "RUT"}
 
 
 def _real(bars):
-    return [b for b in bars or [] if not b.get("interpolated") and b.get("close_price")]
+    """Drop gap-fill bars. Index bars (VIX) saved straight from get_index_historicals
+    use *_value fields; keep them too (factors.bars_to_df reads both)."""
+    return [b for b in bars or [] if not b.get("interpolated") and (b.get("close_price") or b.get("close_value"))]
 
 
 def replay(learner, bars_by_symbol, horizon=None, weight=None):

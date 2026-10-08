@@ -189,10 +189,10 @@ class Learner:
     def grade_outcome(self, factors, regime, decision, conviction, close, outcome_close, atr, drift, weight, day):
         """Grade one untraded signal once its horizon has passed.
 
-        Factors are graded on the EXCESS move: price change minus the trailing
-        drift over the horizon, in ATRs. In a steady bull market every bullish
-        read "wins" on raw direction; grading against the drift asks whether a
-        factor added information beyond the trend. Calibration (would the
+        Factors are graded on the EXCESS move: price change minus the market's
+        long-run drift over the horizon (see factors.market_drift_per_day), in
+        ATRs. In a steady bull market every bullish read "wins" on raw
+        direction; the baseline removes that tilt without favoring any style. Calibration (would the
         trade have won?) uses the raw move, because that's what options pay on.
         Returns whether anything was graded."""
         if not atr:

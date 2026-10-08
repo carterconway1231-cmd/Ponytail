@@ -20,8 +20,14 @@ Modeling assumptions (read results with these in mind):
     (ENTRY_SLIPPAGE_PCT of it on entries), and exits are evaluated on daily
     closes, so intraday stop fills are approximated by the close.
   * Hourly factors only exist where hourly bars do (about the last 6 months).
+  * Earnings: entries are blocked when a report falls before the simulated
+    expiry, like the live gate. Robinhood returns ~2 years of report dates;
+    earlier quarters are backfilled at 91-day steps and blocked with a
+    +/-7-day margin for the date uncertainty.
 
   python -m ponytail.backtest BARS_DIR [--ablate] [--save-exits] [--capital N]
+  BARS_DIR holds SYM_day.json / SYM_hour.json bar lists, VIX_day.json, and
+  optionally SYM_earnings.json (a list of report dates).
 """
 import json
 import math
@@ -92,6 +98,29 @@ def precompute(bars_by_symbol, horizon):
     return events
 
 
+EARNINGS_STEP_DAYS = 91
+BACKFILL_MARGIN_DAYS = 7
+
+
+def earnings_windows(dates, start):
+    """[(first_blocked_day, last_blocked_day)] per report: exact dates block that
+    day; backfilled quarters (before the earliest known report) block +/- a margin."""
+    if not dates:
+        return []
+    known = sorted(date.fromisoformat(d) for d in dates)
+    windows = [(d, d) for d in known]
+    d = known[0] - timedelta(days=EARNINGS_STEP_DAYS)
+    margin = timedelta(days=BACKFILL_MARGIN_DAYS)
+    while d >= start - timedelta(days=EARNINGS_STEP_DAYS):
+        windows.append((d - margin, d + margin))
+        d -= timedelta(days=EARNINGS_STEP_DAYS)
+    return windows
+
+
+def _earnings_in(windows, first, last):
+    return any(lo <= last and hi >= first for lo, hi in windows)
+
+
 def _half_spread(price):
     return max(MIN_HALF_SPREAD, HALF_SPREAD_PCT * price)
 
@@ -116,10 +145,12 @@ def _candidates(cfg, spot, iv, rv, kind, structure):
     return out
 
 
-def simulate(cfg, events, capital, horizon, mask=None, funnel=None):
+def simulate(cfg, events, capital, horizon, mask=None, funnel=None, earnings=None):
     """Run the strategy over precomputed events. mask: factor names to drop.
     funnel (dict) counts where would-be trades drop out."""
     funnel = funnel if funnel is not None else {}
+    start = date.fromisoformat(events[0]["day"])
+    blackout = {sym: earnings_windows(dates, start) for sym, dates in (earnings or {}).items()}
 
     def drop(key):
         funnel[key] = funnel.get(key, 0) + 1
@@ -178,6 +209,7 @@ def simulate(cfg, events, capital, horizon, mask=None, funnel=None):
                     learner.learn_trade(pos["signal"], pos["direction"], pnl, premium, today)
                     equity += pnl
                     trades.append({"symbol": sym, "kind": pos["kind"], "structure": pos["name"], "mode": "backtest",
+                                   "direction": "call" if pos["direction"] > 0 else "put",
                                    "pnl": round(pnl, 2), "r": round(pnl / premium, 3), "reason": reason,
                                    "path": pos["path"], "held_days": held, "vol_regime": pos["vol_regime"],
                                    "opened": pos["opened"].isoformat(), "closed_at": f"{day}T20:00:00+00:00"})
@@ -192,6 +224,9 @@ def simulate(cfg, events, capital, horizon, mask=None, funnel=None):
                 continue
             if len(positions) >= cfg.max_open_positions:
                 drop("max open positions")
+                continue
+            if cfg.avoid_earnings and _earnings_in(blackout.get(sym, []), today, today + timedelta(days=TARGET_DTE)):
+                drop("earnings before expiry")
                 continue
             kind = "call" if decision["decision"] == "BUY" else "put"
             ratio = e["iv"] / e["rv"] if e["rv"] else 1.0
@@ -263,13 +298,14 @@ def summarize(trades, capital, spy_bars, start_day):
 def run(cfg, bars_by_symbol, capital, ablate=False):
     horizon = cfg.shadow_horizon
     events = precompute(bars_by_symbol, horizon)
+    earnings = {s: b["earnings"] for s, b in bars_by_symbol.items() if b.get("earnings")}
     if not events:
         raise SystemExit("not enough history to backtest")
     day_list = sorted({e["day"] for e in events})
     start_day = day_list[min(TRADE_AFTER, len(day_list) - 1)]
     spy = _real((bars_by_symbol.get("SPY") or {}).get("day"))
     funnel = {}
-    trades, learner = simulate(cfg, events, capital, horizon, funnel=funnel)
+    trades, learner = simulate(cfg, events, capital, horizon, funnel=funnel, earnings=earnings)
     out = {"period": f"{start_day}..{day_list[-1]}", "train_only_days": TRADE_AFTER, "funnel": funnel,
            "symbols": sorted({e["sym"] for e in events}), "results": summarize(trades, capital, spy, start_day),
            "learned": learner.report()["factors"], "trades": trades}
@@ -277,7 +313,7 @@ def run(cfg, bars_by_symbol, capital, ablate=False):
         base = out["results"].get("total_pnl", 0.0)
         rows = []
         for f in ALL_FACTORS:
-            t2, _ = simulate(cfg, events, capital, horizon, mask={f})
+            t2, _ = simulate(cfg, events, capital, horizon, mask={f}, earnings=earnings)
             r2 = summarize(t2, capital, spy, start_day)
             rows.append({"factor": f, "pnl_without": r2.get("total_pnl", 0.0), "trades_without": r2.get("trades", 0),
                          "contribution": round(base - r2.get("total_pnl", 0.0), 2)})

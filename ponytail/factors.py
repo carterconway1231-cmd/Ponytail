@@ -331,6 +331,24 @@ def f_relative_strength(d, spy):
     return _clip(diff / 0.05), f"{ret:+.1%} vs SPY {spy_ret:+.1%} over 20d ({diff:+.1%} relative)"
 
 
+def market_drift_per_day(spy_bars, last_day, lookback=252):
+    """SPY's trailing one-year average daily return, as a fraction.
+
+    Factors are graded on the move beyond this baseline so a bull market
+    doesn't make every bullish read look right. A market-wide, long-horizon
+    baseline is used deliberately: subtracting a stock's OWN recent trend
+    mechanically marks trend-following reads wrong and mean-reversion reads
+    right (strong trends rarely keep their full pace), which showed up as a
+    spurious "RSI edge" in the 14-stock study."""
+    if not spy_bars:
+        return 0.0
+    upto = [float(b["close_price"]) for b in spy_bars if b["begins_at"][:10] <= last_day]
+    if len(upto) < 61:
+        return 0.0
+    n = min(lookback, len(upto) - 1)
+    return (upto[-1] / upto[-1 - n]) ** (1 / n) - 1
+
+
 def _aligned(bars, last_day, min_len=25):
     """Context bars up to and including the symbol's last bar date (no lookahead)."""
     if not bars:
@@ -372,7 +390,7 @@ def compute_factors(daily_bars, hourly_bars=None, context=None):
         s, why = f_vix(vix)
         out["vix"] = {"score": round(s, 3), "why": why, "tf": "1D"}
     a_val = float(adx(d)[0].iloc[-1])
-    drift = float((d.c.iloc[-1] - d.c.iloc[-61]) / 60) if len(d) > 61 else 0.0
+    drift = market_drift_per_day((context or {}).get("SPY"), last_day) * float(d.c.iloc[-1])
     return {
         "factors": out,
         "regime": "trend" if a_val >= 25 else "range",
@@ -380,5 +398,5 @@ def compute_factors(daily_bars, hourly_bars=None, context=None):
         "atr": float(atr(d).iloc[-1]),
         "close": float(d.c.iloc[-1]),
         "has_hourly": bool(hourly_bars and len(hourly_bars) >= MIN_HOURLY_BARS),
-        "drift_per_day": drift,  # trailing 60-day trend, used to grade factors on excess moves
+        "drift_per_day": drift,  # market's long-run pace in this symbol's price units (for excess-move grading)
     }

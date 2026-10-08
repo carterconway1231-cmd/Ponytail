@@ -972,3 +972,44 @@ def test_backtest_offers_narrow_spreads_for_small_accounts(cfg):
     assert {"spread_1", "spread_2"} <= set(names)
     legs = dict(bt._candidates(cfg, 780.0, 0.15, 0.12, "put", "debit_spread"))["spread_1"]
     assert legs == [(780, "put", 1), (779, "put", -1)]       # put spread: short strike below
+
+
+def test_backtest_earnings_windows_backfill_with_margin():
+    w = bt.earnings_windows(["2025-05-01", "2025-07-31"], date(2024, 6, 1))
+    assert (date(2025, 5, 1), date(2025, 5, 1)) in w                      # exact report: that day
+    backfilled = [x for x in w if x[0] != x[1]]
+    assert backfilled and all((hi - lo).days == 14 for lo, hi in backfilled)  # +/-7 days around estimates
+    assert min(lo for lo, _ in backfilled) <= date(2024, 6, 1)
+    assert bt._earnings_in(w, date(2025, 4, 20), date(2025, 5, 20))
+    assert not bt._earnings_in(w, date(2025, 5, 5), date(2025, 6, 4))
+
+
+def test_excess_move_baseline_is_market_drift_not_the_stocks_own_trend():
+    spy = real_bars("day")
+    d = fx.market_drift_per_day(spy, spy[-1]["begins_at"][:10])
+    closes = [float(b["close_price"]) for b in spy]
+    n = len(closes) - 1
+    assert d == pytest.approx((closes[-1] / closes[0]) ** (1 / n) - 1)
+    # A stock's own run-up must not move its grading baseline (that biased grading toward mean reversion).
+    rocket = [{**b, "close_price": str(float(b["close_price"]) * (1 + i / 50))} for i, b in enumerate(spy)]
+    a1 = fx.compute_factors(spy, None, {"SPY": spy})
+    a2 = fx.compute_factors(rocket, None, {"SPY": spy})
+    assert a2["drift_per_day"] / a2["close"] == pytest.approx(a1["drift_per_day"] / a1["close"])
+
+
+def test_replay_keeps_raw_index_bars_for_vix_context(cfg):
+    raw_vix = vix_bars()
+    assert "close_value" in raw_vix[0] and "close_price" not in raw_vix[0]   # as saved from get_index_historicals
+    events = bt.precompute({"SPY": {"day": real_bars("day")}, "VIX": {"day": raw_vix}}, 5)
+    assert any("vix" in e["factors"] for e in events)
+
+
+def test_edge_study_reports_both_halves_and_out_of_sample(cfg):
+    from ponytail import study
+    events = bt.precompute({"SPY": {"day": real_bars("day")}, "VIX": {"day": vix_bars()}}, 5)
+    split = sorted({e["day"] for e in events})[len(events) // 2]
+    edge = study.factor_edge(events, split, 5)
+    assert set(edge) == {"raw", "excess"} and set(edge["raw"]) == {"first_half", "second_half"}
+    small = dataclasses.replace(cfg, symbols=["SPY"])
+    res = study.settings_study(small, events, {}, 3000, split, 5)
+    assert len(res["grid"]) == 27 and "/" in res["profitable_out_of_sample"]
