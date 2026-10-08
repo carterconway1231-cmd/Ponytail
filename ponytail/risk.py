@@ -73,6 +73,12 @@ def check_open(cfg, state, market, signals, option_id, quantity, limit_price, to
         problems.append(f"{symbol} signal is HOLD (score {signal['score']:.2f})")
     elif DIRECTION_TO_TYPE[signal["decision"]] != inst["type"]:
         problems.append(f"{symbol} signal is {signal['decision']} but contract is a {inst['type']}")
+    if signal is not None and signal.get("bucket_trades", 0) >= cfg.min_calibration_trades:
+        # Enough history at this conviction level for the learned odds to veto.
+        if signal["p_win"] < cfg.min_win_prob:
+            problems.append(f"learned win rate {signal['p_win']:.0%} at {signal['bucket']} conviction < {cfg.min_win_prob:.0%}")
+        if signal.get("expected_r") is not None and signal["expected_r"] <= 0:
+            problems.append(f"learned expected return {signal['expected_r']:+.2f}R at {signal['bucket']} conviction is not positive")
 
     if symbol not in cfg.symbols:
         problems.append(f"{symbol} is not in the configured SYMBOLS universe")

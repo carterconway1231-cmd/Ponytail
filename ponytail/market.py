@@ -43,7 +43,7 @@ def _f(x):
 
 class MarketCache:
     def __init__(self):
-        self.closes = {}       # symbol -> [float] daily closes, oldest first
+        self.bars = {}         # symbol -> {"day" | "hour" | ...: [raw OHLCV bars, oldest first]}
         self.instruments = {}  # option_id -> {symbol, type, strike, expiration, tradable}
         self.quotes = {}       # option_id -> {bid, ask, mark, delta, open_interest, iv, updated_at}
         self.earnings = {}     # symbol -> [YYYY-MM-DD] report dates (empty list = looked up, none)
@@ -61,12 +61,9 @@ class MarketCache:
 
     def _ingest_get_equity_historicals(self, data, tool_input):
         for result in data.get("results", []):
-            if result.get("interval") not in (None, "day"):
-                continue  # signals are defined on daily bars only
-            bars = [b for b in result.get("bars", []) if not b.get("interpolated")]
-            closes = [float(b["close_price"]) for b in bars if b.get("close_price")]
-            if closes:
-                self.closes[result["symbol"].upper()] = closes
+            bars = [b for b in result.get("bars", []) if not b.get("interpolated") and b.get("close_price")]
+            if bars:
+                self.bars.setdefault(result["symbol"].upper(), {})[result.get("interval") or "day"] = bars
 
     def _ingest_get_option_instruments(self, data, tool_input):
         for inst in data.get("instruments", []):

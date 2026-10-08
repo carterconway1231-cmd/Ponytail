@@ -8,7 +8,6 @@ import os
 import tempfile
 from datetime import datetime, timezone
 
-from .signals import DEFAULT_WEIGHTS, learn_from_trade
 
 MULTIPLIER = 100
 
@@ -20,7 +19,10 @@ def now_iso():
 class State:
     def __init__(self, path, data=None):
         self.path = path
-        self.data = data or {"weights": dict(DEFAULT_WEIGHTS), "positions": {}, "trade_log": []}
+        self.data = data or {"positions": {}, "trade_log": []}
+        self.data.setdefault("learner", {})
+        self.data.pop("weights", None)  # v1 three-indicator weights, superseded by the learner
+        self.learner = None  # attached by the session (needs config)
 
     @classmethod
     def load(cls, path):
@@ -36,10 +38,6 @@ class State:
         with os.fdopen(fd, "w") as f:
             json.dump(self.data, f, indent=2)
         os.replace(tmp, self.path)
-
-    @property
-    def weights(self):
-        return self.data["weights"]
 
     @property
     def positions(self):
@@ -77,7 +75,7 @@ class State:
         self.positions[option_id] = {
             "symbol": inst["symbol"], "type": inst["type"], "strike": inst["strike"],
             "expiration": inst["expiration"], "quantity": quantity, "entry_price": price,
-            "entry_votes": signal["votes"], "direction": 1 if inst["type"] == "call" else -1,
+            "entry_signal": signal, "direction": 1 if inst["type"] == "call" else -1,
             "mode": mode, "opened_at": now_iso(), "open_order_id": order_id, "filled": mode == "paper",
             "hwm": price, "stop": None,
         }
@@ -86,11 +84,16 @@ class State:
         pos = self.positions[option_id]
         quantity = min(quantity, pos["quantity"])
         pnl = (exit_price - pos["entry_price"]) * quantity * MULTIPLIER
-        learn_from_trade(self.weights, pos["entry_votes"], pos["direction"], pnl)
+        premium = pos["entry_price"] * quantity * MULTIPLIER
+        if self.learner is not None:
+            self.learner.learn_trade(pos.get("entry_signal"), pos["direction"], pnl, premium)
+        sig = pos.get("entry_signal") or {}
         self.trade_log.append({
-            "option_id": option_id, **{k: pos[k] for k in ("symbol", "type", "strike", "expiration", "mode", "entry_votes")},
+            "option_id": option_id, **{k: pos[k] for k in ("symbol", "type", "strike", "expiration", "mode")},
             "quantity": quantity, "entry_price": pos["entry_price"], "exit_price": exit_price,
-            "pnl": round(pnl, 2), "reason": reason, "weights_after": dict(self.weights), "closed_at": now_iso(),
+            "pnl": round(pnl, 2), "r": round(pnl / premium, 3) if premium else None, "reason": reason,
+            "entry_conviction": sig.get("conviction"), "entry_regime": sig.get("regime"),
+            "agreeing_factors": sig.get("agree"), "closed_at": now_iso(),
         })
         pos["quantity"] -= quantity
         if pos["quantity"] <= 0:

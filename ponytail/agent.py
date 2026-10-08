@@ -20,7 +20,8 @@ from claude_agent_sdk import (
 
 from . import protect, risk
 from .market import MarketCache, decode_tool_response
-from .signals import raw_votes, weighted_decision
+from .factors import compute_factors
+from .learner import Learner
 from .state import State, now_iso
 
 log = logging.getLogger("ponytail")
@@ -35,7 +36,7 @@ RH_READ_TOOLS = {
     "get_option_positions", "get_option_orders", "search",
 }
 RH_WRITE_TOOLS = {"review_option_order", "place_option_order", "cancel_option_order"}
-LOCAL_TOOLS = {"compute_signals", "propose_option_trade", "review_positions", "portfolio_status"}
+LOCAL_TOOLS = {"compute_signals", "propose_option_trade", "review_positions", "portfolio_status", "learning_report"}
 
 ALLOWED_TOOLS = (
     {RH + t for t in RH_READ_TOOLS | RH_WRITE_TOOLS}
@@ -60,6 +61,7 @@ class TradingSession:
         self.cfg = cfg
         self.today = today or date.today()
         self.state = State.load(cfg.state_path)
+        self.learner = self.state.learner = Learner(self.state.data["learner"], cfg)
         self.market = MarketCache()
         self.signals = {}  # symbol -> {votes, score, decision, rsi}
         self.plans = {}    # option_id -> approved open plan
@@ -79,17 +81,29 @@ class TradingSession:
 
     def compute_signals(self, symbol):
         symbol = symbol.upper()
-        closes = self.market.closes.get(symbol)
-        if not closes:
+        bars = self.market.bars.get(symbol, {})
+        daily = bars.get("day")
+        if not daily:
             return {"error": f"no daily bars for {symbol}; call get_equity_historicals with interval='day' first"}
         try:
-            votes, last_rsi = raw_votes(closes)
+            analysis = compute_factors(daily, bars.get("hour"))
         except ValueError as e:
             return {"error": f"{e}; request a longer start_time"}
-        decision, score = weighted_decision(votes, self.state.weights)
-        self.signals[symbol] = {"votes": votes, "score": round(score, 3), "decision": decision, "rsi": round(last_rsi, 1)}
-        return {"symbol": symbol, "last_close": closes[-1], "bars": len(closes), "weights": self.state.weights,
-                **self.signals[symbol], "implies": risk.DIRECTION_TO_TYPE.get(decision, "no trade")}
+        labeled = self.learner.label_snapshots(symbol, daily)
+        decision = self.learner.decide(analysis["factors"], analysis["regime"])
+        self.learner.record_snapshot(symbol, self.today.isoformat(), analysis, decision)
+        self.signals[symbol] = {**decision, "regime": analysis["regime"],
+                                "factors": {k: {"score": v["score"]} for k, v in analysis["factors"].items()}}
+        self.state.save()
+        weights = {k: round(self.learner.weight(k, analysis["regime"]), 2) for k in analysis["factors"]}
+        return {
+            "symbol": symbol, "close": analysis["close"], "regime": f"{analysis['regime']} (ADX {analysis['adx']})",
+            **decision, "implies": risk.DIRECTION_TO_TYPE.get(decision["decision"], "no trade"),
+            "hourly_factors": "included" if analysis["has_hourly"] else "MISSING: fetch interval='hour' bars",
+            "factors": {k: {**v, "learned_weight": weights[k]} for k, v in
+                        sorted(analysis["factors"].items(), key=lambda kv: -abs(kv[1]["score"]) * weights[kv[0]])},
+            "past_signals_graded_now": labeled,
+        }
 
     def propose_option_trade(self, option_id, quantity, limit_price, thesis):
         problems = risk.check_open(self.cfg, self.state, self.market, self.signals, option_id,
@@ -124,7 +138,8 @@ class TradingSession:
         log_ = self.state.trade_log
         return {
             "mode": self.mode, "account_number": self.cfg.account_number, "today": day,
-            "universe": self.cfg.symbols, "weights": self.state.weights,
+            "universe": self.cfg.symbols,
+            "learning": {k: self.learner.d[k] for k in ("trades_learned", "shadow_learned")},
             "open_positions": self.state.positions, "open_premium": round(self.state.open_premium(), 2),
             "realized_pnl_today": round(self.state.realized_pnl_on(day), 2),
             "realized_pnl_all_time": round(sum(t["pnl"] for t in log_), 2), "closed_trades": len(log_),
@@ -243,7 +258,7 @@ class TradingSession:
         else:
             pnl = self.state.close_position(oid, order["quantity"], order["price"], reason=f"{mode} close")
             self.audit("closed", mode=mode, option_id=oid, quantity=order["quantity"], price=order["price"],
-                       pnl=round(pnl, 2), weights=self.state.weights, broker=broker_response)
+                       pnl=round(pnl, 2), broker=broker_response)
         self.state.save()
 
     # ---- wiring -------------------------------------------------------
@@ -251,8 +266,11 @@ class TradingSession:
     def local_server(self):
         s = self
 
-        @tool("compute_signals", "Run the weighted SMA/RSI/MACD ensemble on the daily bars already fetched "
-              "via get_equity_historicals. Returns BUY (long call), SELL (long put) or HOLD.", {"symbol": str})
+        @tool("compute_signals", "Score a symbol on 14 factors (trend, MACD, RSI, ADX, volume thrust, order-flow/CVD, "
+              "VWAP, ICT market structure, liquidity sweeps, fair value gaps, order blocks, OTE, premium/discount) "
+              "from daily + hourly bars already fetched via get_equity_historicals, blend them with learned "
+              "weights, and return BUY (long call) / SELL (long put) / HOLD with confluence, learned win "
+              "probability and per-factor reasons.", {"symbol": str})
         async def compute_signals(args):
             return _text(s.compute_signals(args["symbol"]))
 
@@ -274,11 +292,16 @@ class TradingSession:
         async def review_positions(args):
             return _text(s.review_positions())
 
+        @tool("learning_report", "What the agent has learned: each factor's measured hit rate and current "
+              "weight in trending vs ranging markets, and win rate / expected R by conviction level.", {})
+        async def learning_report(args):
+            return _text(s.learner.report())
+
         @tool("portfolio_status", "Mode (paper/live), risk limits, ensemble weights, agent positions and P&L.", {})
         async def portfolio_status(args):
             return _text(s.portfolio_status())
 
-        return create_sdk_mcp_server("ponytail", tools=[compute_signals, propose_option_trade, review_positions, portfolio_status])
+        return create_sdk_mcp_server("ponytail", tools=[compute_signals, propose_option_trade, review_positions, portfolio_status, learning_report])
 
     def options(self):
         servers = {"ponytail": self.local_server()}
@@ -305,20 +328,27 @@ class TradingSession:
         )
 
     def kickoff(self):
-        start = (self.today - timedelta(days=150)).isoformat() + "T00:00:00Z"
+        day_start = (self.today - timedelta(days=420)).isoformat() + "T00:00:00Z"
+        hour_start = (self.today - timedelta(days=30)).isoformat() + "T00:00:00Z"
         return (
             f"Run today's trading cycle. Date: {self.today.isoformat()}. Mode: {self.mode.upper()}.\n"
             f"Account: {self.cfg.account_number}. Universe: {', '.join(self.cfg.symbols)}.\n"
-            f"For signals, request daily bars with interval='day' and start_time='{start}'."
+            f"For signals, fetch both timeframes for the whole universe: interval='day' with "
+            f"start_time='{day_start}', and interval='hour' with start_time='{hour_start}'."
         )
 
 
 SYSTEM_PROMPT = """You are Ponytail, an autonomous options trading agent operating a small Robinhood account through the Robinhood MCP tools. Each run is one trading cycle. No human reviews your trades before they are placed, so be deliberate, and when in doubt, don't trade.
 
 How decisions are split:
-- Direction comes from code. compute_signals runs an adaptive SMA/RSI/MACD ensemble: BUY means a long call, SELL means a long put, HOLD means no new trade. You never trade against or without a signal.
-- You are the judgment layer. For each BUY/SELL signal, decide whether the context supports it: upcoming earnings, analyst consensus, fundamentals, the size and nature of the recent move. Veto a signal whenever the context looks wrong, and say why. A veto costs nothing; a bad trade costs money.
-- Guardrails are enforced in code. propose_option_trade and the order hooks check sizing, DTE, delta, spread, open interest, earnings, and portfolio and daily-loss limits against data Robinhood returned this run. If a rule rejects a trade, adjust within the rules (another strike, expiration or quantity) or skip it. Never try to work around a rule.
+- The setup comes from code. compute_signals scores 14 factors on the daily and hourly charts:
+  - Classic: trend, MACD, RSI, ADX, volume thrust.
+  - Order-flow estimates: CVD from where bars close in their range, and VWAP.
+  - ICT: market structure (BOS/CHoCH), liquidity sweeps, fair value gaps, order blocks, OTE, premium/discount.
+  It blends them with weights learned from this account's own results, and returns BUY (long call), SELL (long put) or HOLD. With each it gives the confluence (which factors agree and which oppose), the learned win probability and expected R for setups at that conviction, and a one-line reason per factor. You never trade against or without a BUY/SELL.
+- You are the judgment layer. For each BUY/SELL, read the factor reasons as a chart narrative and ask whether they tell a coherent story. A strong case looks like a liquidity sweep into a discount OTE or order block with structure shifting your way and flow confirming. A weak one is mostly lagging trend factors with ICT and flow against it. Check the context too: upcoming earnings, analyst consensus, fundamentals, the nature of the move. Veto when the story is weak or the context is wrong, and say why. A veto costs nothing, and the system still learns from vetoed signals by grading them later.
+- Use the learning. learning_report shows which factors have actually been right in trending vs ranging markets. Lean on factors with proven hit rates and be skeptical of setups that rest on ones that have been wrong.
+- Guardrails are enforced in code. propose_option_trade and the order hooks check sizing, DTE, delta, spread, open interest, earnings, learned win rate and expected value, portfolio and loss limits, and stop protection, all against data Robinhood returned this run. If a rule rejects a trade, adjust within the rules (another strike, expiration or quantity) or skip it. Never try to work around a rule.
 
 Cycle:
 0. If the Robinhood tools are not directly available, load them with ToolSearch (e.g. "select:mcp__Robinhood__get_option_quotes,..." or a keyword search for "Robinhood"). ToolSearch waits for servers that are still connecting.
@@ -329,7 +359,7 @@ Cycle:
    d. For each PLACE_STOP row: place_option_order with exactly the stop_order arguments given (plus account_number).
    e. For each RAISE_STOP row: cancel_option_order the old stop (cancel_stop_first), then place the new stop_order.
    f. Never leave a held position without a resting stop. While any position is unprotected, the code rejects every new entry.
-2. Fetch daily bars for the whole universe in one get_equity_historicals call and run compute_signals for each symbol.
+2. Fetch bars for the whole universe: one get_equity_historicals call with interval='day' and one with interval='hour' (start times are in the kickoff message). Then run compute_signals for each symbol, and call learning_report once to see which factors are currently earning their weight.
 3. If review_positions or portfolio_status lists any circuit_breakers, open nothing new this run. Report why and finish.
 4. For each BUY/SELL signal you don't veto:
    a. get_earnings_results for the symbol (ETFs return none, which is fine).
@@ -342,7 +372,7 @@ Cycle:
    - mode
    - stops placed, raised or triggered
    - exits
-   - signals per symbol
+   - signals per symbol, with the top factors and the learned win probability
    - trades placed or vetoed, with reasons
    - circuit breakers and guardrail rejections that mattered
 

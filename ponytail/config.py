@@ -58,6 +58,15 @@ class Config:
     stop_limit_buffer_pct: float = 0.15   # stop_limit: limit this far below the trigger
     exit_dte: int = 7
 
+    # Signal engine & learning
+    signal_threshold: float = 0.25     # |learned-weight score| needed for BUY/SELL
+    min_confluence: int = 4            # factors that must agree (score >= 0.25 in the trade direction)
+    min_win_prob: float = 0.52         # learned P(win) floor once a conviction bucket has evidence
+    min_calibration_trades: int = 10   # trades in a bucket before P(win)/EV gates apply
+    learn_decay: float = 0.97          # per-update forgetting; lower adapts faster to regime change
+    shadow_weight: float = 0.3         # how much an untraded signal's outcome teaches vs a real trade
+    shadow_horizon: int = 5            # trading days until an untraded signal is graded
+
     # Agent runtime
     model: str = "claude-opus-5-5"
     effort: str = "high"
@@ -99,6 +108,13 @@ class Config:
             stop_order_type=_stop_type(os.environ.get("STOP_ORDER_TYPE", "stop_market")),
             stop_limit_buffer_pct=_float("STOP_LIMIT_BUFFER_PCT", 0.15),
             exit_dte=_int("EXIT_DTE", 7),
+            signal_threshold=_float("SIGNAL_THRESHOLD", 0.25),
+            min_confluence=_int("MIN_CONFLUENCE", 4),
+            min_win_prob=_float("MIN_WIN_PROB", 0.52),
+            min_calibration_trades=_int("MIN_CALIBRATION_TRADES", 10),
+            learn_decay=_float("LEARN_DECAY", 0.97),
+            shadow_weight=_float("SHADOW_WEIGHT", 0.3),
+            shadow_horizon=_int("SHADOW_HORIZON", 5),
             model=os.environ.get("AGENT_MODEL", "claude-opus-5-5"),
             effort=os.environ.get("AGENT_EFFORT", "high"),
             max_turns=_int("AGENT_MAX_TURNS", 80),

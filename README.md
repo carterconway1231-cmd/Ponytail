@@ -21,10 +21,49 @@ Robinhood's official MCP server.
 
 | Layer | Owner | What it does |
 |---|---|---|
-| Direction | code (`signals.py`) | Weighted SMA20/50 crossover + RSI14 + MACD vote. BUY → long call, SELL → long put, HOLD → no trade. |
-| Judgment | Claude | Vetoes signals on context (earnings, fundamentals, analyst consensus, nature of the move), picks the expiration/strike, sets the limit, manages exits. |
-| Guardrails | code (`risk.py` + hooks) | Final say on every order. Claude cannot bypass them. |
-| Learning | code (`state.py`) | When a position closes, indicators that voted with a winning bet gain weight; those that voted with a losing bet lose it. |
+| Setup | code (`factors.py`) | Scores 14 factors on daily and hourly bars, each from -1 to +1 with a one-line reason. |
+| Weighting & odds | code (`learner.py`) | Blends factors using weights learned from this account's results, requires confluence, and estimates win probability and expected R. Result: BUY → long call, SELL → long put, HOLD → no trade. |
+| Judgment | Claude | Reads the factor reasons as a chart narrative and vetoes setups that don't hang together or have bad context (earnings, fundamentals). Picks the contract and limit, and manages exits. |
+| Guardrails | code (`risk.py`, `protect.py` + hooks) | Final say on every order. Claude cannot bypass them. |
+
+### Factors
+
+| Group | Factor | Timeframe | Reads |
+|---|---|---|---|
+| Classic | `trend` | 1D | Price vs EMA 20/50/200 alignment |
+| | `macd` | 1D | Histogram strength, fresh crosses |
+| | `rsi` | 1D | RSI14 overbought/oversold (mean reversion) |
+| | `adx` | 1D | Trend strength × DI direction; also sets the regime (trend if ADX ≥ 25, else range) |
+| | `volume_thrust` | 1D | High relative-volume up or down days |
+| Order flow (estimated) | `order_flow` | 1h | Cumulative volume delta estimated from where each bar closes in its range, plus CVD/price divergence |
+| | `vwap` | 1h | Distance from 5-session VWAP in ATRs |
+| ICT | `structure` | 1h | Break of structure (continuation) vs change of character (shift) |
+| | `liquidity_sweep` | 1h | Wick through a prior swing high or low that closes back inside the range |
+| | `fvg` | 1h | Unfilled fair value gaps, strongest on a retest |
+| | `order_block` | 1h | Last opposite candle before a displacement move, unmitigated, being retested |
+| | `ote` | 1h | Price in the 62–79% retracement of the latest impulse leg, with structure |
+| | `premium_discount` | 1D | Position in the 20-day dealing range (buy in discount, sell in premium) |
+
+Robinhood provides bars, not the tape, so "order flow" here is an estimate from price and volume, not a footprint chart.
+
+A BUY or SELL requires all of the following:
+
+- |learned-weight score| ≥ `SIGNAL_THRESHOLD`
+- at least `MIN_CONFLUENCE` factors agree
+- agreeing factors outnumber opposing ones 2:1
+- once a conviction level has `MIN_CALIBRATION_TRADES` of history, a learned win rate ≥ `MIN_WIN_PROB` and a positive expected R
+
+### How it learns
+
+No indicator is assumed to work. ICT concepts in particular have little rigorous evidence behind them, so every factor starts at a neutral 50% and earns its weight from results:
+
+- **After every closed trade**, each factor that had an opinion is graded. It's right if it pointed the way that paid. Bigger wins and losses (relative to premium) count more.
+- **After every signal, traded or not.** Each day's per-symbol read is saved, and 5 trading days later it's graded on whether the stock moved at least half an ATR in the factor's direction. That gives roughly 5–10× more learning data than trades alone, and the agent learns from vetoed setups too.
+- **By regime.** Each factor keeps separate track records for trending and ranging markets (by ADX). An ICT retracement entry may work in ranges and fail in trends, and the weights will reflect that.
+- **Bayesian and decaying.** Hit rates are Beta posteriors with a 10-trade prior, so a lucky streak can't swing them. Weight = (hit rate / 50%)², so a 70% factor counts about 2× and a 30% factor about 0.36×. Old evidence fades (`LEARN_DECAY`), so the model adapts when markets change.
+- **Calibrated odds.** Win rate and average win/loss in R are tracked per conviction level. Once there's enough history, the gate blocks setups that historically lose money.
+
+`learning_report` (an agent tool, also stored in `agent_state.json`) shows each factor's hit rate and weight by regime, plus the calibration table.
 
 ### Guardrails, enforced in the `PreToolUse` hook
 

@@ -10,7 +10,6 @@ from ponytail import risk
 from ponytail.agent import RH, TradingSession
 from ponytail.config import Config
 from ponytail.market import MarketCache
-from ponytail.signals import learn_from_trade, raw_votes, weighted_decision
 
 TODAY = date(2026, 10, 8)
 ACCT = "955800222"
@@ -46,10 +45,13 @@ def broker_order(order_id, state, processed_qty="1.00000", premium="155", typ="l
             "legs": [{"option_id": OID, "side": side, "position_effect": effect}]}
 
 
-def rising_then_cross():
-    """Long decline then a sharp rally: SMA20/50 and MACD cross up on the last bar region."""
-    p = list(np.linspace(120, 90, 80)) + list(np.linspace(90, 130, 12))
-    return p
+def sig(decision, **kw):
+    """A compute_signals result as the session stores it."""
+    return {"decision": decision, "score": 0.5, "conviction": 0.5, "bucket": "medium",
+            "agree": ["trend", "macd", "structure", "ote"], "oppose": ["rsi"], "p_win": 0.5,
+            "expected_r": None, "bucket_trades": 0, "regime": "trend",
+            "factors": {"trend": {"score": 1.0}, "macd": {"score": 0.6}, "rsi": {"score": -0.5},
+                        "structure": {"score": 1.0}, "ote": {"score": 0.0}}, **kw}
 
 
 @pytest.fixture
@@ -60,7 +62,7 @@ def cfg(tmp_path):
 @pytest.fixture
 def session(cfg):
     s = TradingSession(cfg, today=TODAY)
-    s.signals["SPY"] = {"votes": {"sma": 1, "rsi": 0, "macd": 1}, "score": 0.67, "decision": "BUY", "rsi": 55}
+    s.signals["SPY"] = sig("BUY")
     s.market.ingest("get_option_instruments", {}, instruments_resp())
     s.market.ingest("get_option_quotes", {}, quotes_resp())
     s.market.ingest("get_earnings_results", {"symbol": "SPY"}, mcp({"data": {"results": []}}))
@@ -82,30 +84,6 @@ def order(effect="open", side="buy", qty="1", price="1.55", **kw):
     return o
 
 
-# ---- signals ----------------------------------------------------------
-
-def test_raw_votes_and_decision():
-    votes, last_rsi = raw_votes(rising_then_cross())
-    assert set(votes) == {"sma", "rsi", "macd"} and 0 <= last_rsi <= 100
-    decision, score = weighted_decision({"sma": 1, "rsi": 0, "macd": 1}, {"sma": 1, "rsi": 1, "macd": 1})
-    assert decision == "BUY" and score == pytest.approx(2 / 3)
-
-
-def test_raw_votes_needs_history():
-    with pytest.raises(ValueError):
-        raw_votes([100.0] * 30)
-
-
-def test_learning_respects_put_direction():
-    # A profitable long put (bearish bet): the indicator that voted -1 was right.
-    w = {"sma": 1.0, "rsi": 1.0, "macd": 1.0}
-    learn_from_trade(w, {"sma": -1, "rsi": 0, "macd": 1}, direction=-1, pnl=50)
-    assert w == {"sma": 1.1, "rsi": 1.0, "macd": 0.9}
-    # A losing long call: the indicator that voted +1 was wrong.
-    learn_from_trade(w, {"sma": 1, "rsi": 0, "macd": -1}, direction=1, pnl=-20)
-    assert w["sma"] == pytest.approx(1.0) and w["macd"] == pytest.approx(1.0)
-
-
 # ---- market cache ---------------------------------------------------------
 
 def test_ingest_parses_real_shapes():
@@ -113,7 +91,7 @@ def test_ingest_parses_real_shapes():
     m.ingest("get_equity_historicals", {}, mcp({"data": {"results": [{"symbol": "SPY", "interval": "day", "bars": [
         {"close_price": "765.61"}, {"close_price": "764.20"},
         {"close_price": "779.09", "interpolated": True}]}]}}))
-    assert m.closes["SPY"] == [765.61, 764.20]  # interpolated gap-fill dropped
+    assert [b["close_price"] for b in m.bars["SPY"]["day"]] == ["765.61", "764.20"]  # gap-fill dropped
     m.ingest("get_option_quotes", {}, quotes_resp())
     assert m.quotes[OID]["bid"] == 1.5 and m.quotes[OID]["open_interest"] == 500
     assert m.quote_age_minutes(OID) < 5  # nanosecond timestamps parse
@@ -206,7 +184,11 @@ def test_paper_round_trip_learns_from_pnl(session):
     assert OID not in session.state.positions
     trade = session.state.trade_log[-1]
     assert trade["pnl"] == pytest.approx(85.0)
-    assert session.state.weights == {"sma": 1.1, "rsi": 1.0, "macd": 1.1}
+    # Winning call: bullish factors were right, the bearish RSI read was wrong; OTE had no opinion.
+    lr = session.learner
+    assert lr.hit_rate("trend", "trend") > 0.5 and lr.hit_rate("structure", "trend") > 0.5
+    assert lr.hit_rate("rsi", "trend") < 0.5 and lr.hit_rate("ote", "trend") == 0.5
+    assert lr.d["trades_learned"] == 1
 
     # State persisted to disk.
     reloaded = json.load(open(session.cfg.state_path))
@@ -215,7 +197,7 @@ def test_paper_round_trip_learns_from_pnl(session):
 
 def test_live_mode_allows_and_books_on_success(cfg):
     s = TradingSession(dataclasses.replace(cfg, live_trading=True), today=TODAY)
-    s.signals["SPY"] = {"votes": {"sma": 1, "rsi": 0, "macd": 1}, "score": 0.67, "decision": "BUY", "rsi": 55}
+    s.signals["SPY"] = sig("BUY")
     s.market.ingest("get_option_instruments", {}, instruments_resp())
     s.market.ingest("get_option_quotes", {}, quotes_resp())
     s.market.ingest("get_earnings_results", {"symbol": "SPY"}, mcp({"data": {"results": []}}))
@@ -233,7 +215,7 @@ def test_live_mode_allows_and_books_on_success(cfg):
         broker_order("order-1", "cancelled", processed_qty="0", premium="0")]}}))
     s.review_positions()
     assert OID not in s.state.positions
-    assert s.state.weights == {"sma": 1.0, "rsi": 1.0, "macd": 1.0}
+    assert s.learner.d["trades_learned"] == 0  # no P&L known, nothing learned
 
 
 def test_close_of_unheld_contract_denied(session):
@@ -281,7 +263,7 @@ def test_required_stop_and_trailing_ratchet(cfg):
 
 def test_new_entries_blocked_until_position_has_a_stop(session):
     open_paper(session)
-    session.signals["QQQ"] = {"votes": {"sma": 1, "rsi": 0, "macd": 1}, "score": 0.67, "decision": "BUY", "rsi": 50}
+    session.signals["QQQ"] = sig("BUY")
     session.market.ingest("get_option_instruments", {}, instruments_resp(oid=QQQ_ID, symbol="QQQ"))
     session.market.ingest("get_option_quotes", {}, quotes_resp(oid=QQQ_ID))
     session.market.ingest("get_earnings_results", {"symbol": "QQQ"}, mcp({"data": {"results": []}}))
@@ -328,7 +310,8 @@ def test_paper_stop_triggers_and_books_loss(session):
     assert res["broker_events"][0]["kind"] == "stopped_out"
     assert OID not in session.state.positions
     assert session.state.trade_log[-1]["pnl"] == pytest.approx(-60.0)   # (0.95 - 1.55) * 100
-    assert session.state.weights == {"sma": 0.9, "rsi": 1.0, "macd": 0.9}
+    # Losing call: bullish factors were wrong, the bearish RSI read was right.
+    assert session.learner.hit_rate("trend", "trend") < 0.5 < session.learner.hit_rate("rsi", "trend")
     # Cooldown: no immediate re-entry on the symbol that just lost.
     session.market.ingest("get_option_quotes", {}, quotes_resp())
     res = session.propose_option_trade(OID, 1, 1.55, "t")
@@ -386,7 +369,7 @@ def test_unrealized_losses_count_toward_daily_limit(session):
 
 def live_session(cfg):
     s = TradingSession(dataclasses.replace(cfg, live_trading=True), today=TODAY)
-    s.signals["SPY"] = {"votes": {"sma": 1, "rsi": 0, "macd": 1}, "score": 0.67, "decision": "BUY", "rsi": 55}
+    s.signals["SPY"] = sig("BUY")
     s.market.ingest("get_option_instruments", {}, instruments_resp())
     s.market.ingest("get_option_quotes", {}, quotes_resp())
     s.market.ingest("get_earnings_results", {"symbol": "SPY"}, mcp({"data": {"results": []}}))
@@ -441,3 +424,162 @@ def test_live_close_is_pending_until_filled(cfg):
         broker_order("close-1", "filled", premium="241", side="sell", effect="close")]}}))
     s.review_positions()
     assert OID not in s.state.positions and s.state.trade_log[-1]["pnl"] == pytest.approx(86.0)
+
+
+# ---- factor engine ---------------------------------------------------------------
+
+import os  # noqa: E402
+
+from ponytail import factors as fx  # noqa: E402
+from ponytail.learner import Learner  # noqa: E402
+
+FIX = os.path.join(os.path.dirname(__file__), "fixtures")
+
+
+def real_bars(kind):
+    return [b for b in json.load(open(os.path.join(FIX, f"spy_{kind}.json"))) if not b.get("interpolated")]
+
+
+def hbars(rows):
+    """rows of (o, h, l, c, v) -> Robinhood-shaped bars."""
+    return [{"open_price": o, "high_price": h, "low_price": l, "close_price": c, "volume": v,
+             "begins_at": f"2026-09-{1 + i // 7:02d}T{14 + i % 7}:00:00Z"} for i, (o, h, l, c, v) in enumerate(rows)]
+
+
+def drift(n, start=100.0, step=0.0, wiggle=0.3, v=1000):
+    rows, p = [], start
+    for i in range(n):
+        o = p
+        p = p + step + (wiggle if i % 2 else -wiggle)
+        rows.append((o, max(o, p) + 0.2, min(o, p) - 0.2, p, v))
+    return rows
+
+
+def test_real_spy_data_produces_all_factors():
+    a = fx.compute_factors(real_bars("day"), real_bars("hour"))
+    assert set(a["factors"]) == set(fx.ALL_FACTORS)
+    assert all(-1 <= f["score"] <= 1 and f["why"] for f in a["factors"].values())
+    assert a["regime"] in ("trend", "range") and a["has_hourly"]
+
+
+def test_daily_only_still_scores():
+    a = fx.compute_factors(real_bars("day"))
+    assert set(a["factors"]) == set(fx.DAILY_FACTORS) and not a["has_hourly"]
+
+
+def test_fvg_retest_detected():
+    rows = drift(40)
+    base = rows[-1][3]
+    # displacement up leaves a gap between bar[-3].high and bar[-1].low, then price returns into it
+    rows += [(base, base + 0.3, base - 0.2, base + 0.2, 1000),
+             (base + 0.2, base + 3.0, base + 0.2, base + 2.9, 5000),
+             (base + 2.9, base + 3.5, base + 1.0, base + 3.3, 2000),
+             (base + 3.3, base + 3.4, base + 1.1, base + 1.2, 1500)]
+    s, why = fx.f_fvg(fx.bars_to_df(hbars(rows)))
+    assert s == 1.0 and "bullish FVG" in why
+
+
+def path(segments, start=100.0, v=1000):
+    """Price path from (bars, step) legs with clean swing points."""
+    rows, p = [], start
+    for n, step in segments:
+        for _ in range(n):
+            o, p = p, p + step
+            if step > 0:
+                rows.append((o, p + 0.1, o - 0.05, p, v))
+            else:
+                rows.append((o, o + 0.05, p - 0.1, p, v))
+    return rows
+
+
+def test_liquidity_sweep_detected():
+    rows = path([(6, 1), (3, -1), (4, 1), (2, -0.5)])
+    swing_low = min(r[2] for r in rows[6:9])
+    last = rows[-1][3]
+    rows.append((last, last + 0.1, swing_low - 0.8, last + 0.2, 3000))  # wick under the lows, close back above
+    s, why = fx.f_liquidity_sweep(fx.bars_to_df(hbars(rows)))
+    assert s > 0 and "sell-side liquidity swept" in why
+
+
+def test_structure_break_and_choch():
+    up = path([(5, 1), (2, -1)] * 4 + [(5, 1)])          # higher highs: bullish BOS
+    s, why = fx.f_structure(fx.bars_to_df(hbars(up)))
+    assert s > 0 and "bullish BOS" in why
+    down = up + path([(10, -1.5)], start=up[-1][3])        # breaks the last higher low: shift
+    s, why = fx.f_structure(fx.bars_to_df(hbars(down)))
+    assert s < 0 and "bearish CHoCH" in why
+
+
+def test_order_flow_reads_closing_pressure():
+    buying = [(100, 101, 99, 100.95, 1000)] * 25   # every bar closes at its high
+    selling = [(100, 101, 99, 99.05, 1000)] * 25
+    assert fx.f_order_flow(fx.bars_to_df(hbars(buying)))[0] > 0.8
+    assert fx.f_order_flow(fx.bars_to_df(hbars(selling)))[0] < -0.8
+
+
+def test_ote_zone():
+    # Break of structure up, impulse leg 101.9 -> 111.1, then a ~70% pullback into the OTE zone.
+    rows = path([(4, 1), (2, -1), (6, 1.5), (3, -2.1)])
+    s, why = fx.f_ote(fx.bars_to_df(hbars(rows)))
+    assert s == 1.0 and "OTE zone" in why, why
+    shallow = path([(4, 1), (2, -1), (6, 1.5), (3, -0.6)])   # only ~20% back: not an entry yet
+    s, why = fx.f_ote(fx.bars_to_df(hbars(shallow)))
+    assert s == 0.0 and "not retraced enough" in why, why
+
+
+# ---- learner -------------------------------------------------------------------------
+
+def test_learner_upweights_winners_and_fades_losers(cfg):
+    lr = Learner({}, cfg)
+    assert lr.weight("ote", "trend") == pytest.approx(1.0)
+    entry = {"factors": {"ote": {"score": 1.0}, "rsi": {"score": 1.0}}, "regime": "trend", "conviction": 0.5}
+    for _ in range(8):
+        lr.learn_trade(entry, direction=1, pnl=60, premium=150)          # bullish OTE calls keep winning
+    assert lr.weight("ote", "trend") > 1.3
+    entry2 = {"factors": {"rsi": {"score": 1.0}}, "regime": "trend", "conviction": 0.5}
+    for _ in range(16):
+        lr.learn_trade(entry2, direction=1, pnl=-60, premium=150)        # RSI-only calls keep losing
+    assert lr.weight("rsi", "trend") < 0.8
+    # Regime-specific: trend-regime evidence moves the range weight less.
+    assert abs(lr.weight("ote", "range") - 1) < abs(lr.weight("ote", "trend") - 1)
+
+
+def test_learner_shadow_labels_untraded_signals(cfg):
+    lr = Learner({}, cfg)
+    analysis = {"close": 100.0, "atr": 2.0, "regime": "range",
+                "factors": {"fvg": {"score": 1.0}, "vwap": {"score": -1.0}}}
+    lr.record_snapshot("SPY", "2026-09-01", analysis, {"decision": "BUY", "conviction": 0.5, "score": 0.5})
+    later = [{"begins_at": f"2026-09-{d:02d}T00:00:00Z", "close_price": str(100 + d)} for d in range(2, 9)]
+    assert lr.label_snapshots("SPY", later[:3]) == 0      # horizon not reached
+    assert lr.label_snapshots("SPY", later) == 1          # +6 after 5 days = 3 ATR up
+    assert lr.hit_rate("fvg", "range") > 0.5 > lr.hit_rate("vwap", "range")
+    assert lr.d["snapshots"] == [] and lr.d["shadow_learned"] == 1
+
+
+def test_decide_requires_confluence(cfg):
+    lr = Learner({}, cfg)
+    lone = {"trend": {"score": 1.0}, "macd": {"score": 0.0}, "rsi": {"score": 0.0}}
+    d = lr.decide(lone, "trend")
+    assert d["decision"] == "HOLD" and any("factors agree" in r for r in d["hold_reasons"])
+    stacked = {k: {"score": 0.8} for k in ("trend", "macd", "structure", "ote", "fvg")}
+    assert lr.decide(stacked, "trend")["decision"] == "BUY"
+    conflicted = {**stacked, "vwap": {"score": -0.9}, "order_flow": {"score": -0.9}, "rsi": {"score": -0.9}}
+    assert lr.decide(conflicted, "trend")["decision"] == "HOLD"
+
+
+def test_learned_odds_gate_blocks_losing_setups(session):
+    session.signals["SPY"].update(bucket_trades=12, p_win=0.40, expected_r=-0.15)
+    problems = risk.check_open(session.cfg, session.state, session.market, session.signals, OID, 1, 1.55, TODAY)
+    assert any("learned win rate" in p for p in problems) and any("expected return" in p for p in problems)
+
+
+def test_compute_signals_end_to_end_on_real_bars(session):
+    session.market.ingest("get_equity_historicals", {}, mcp({"data": {"results": [
+        {"symbol": "SPY", "interval": "day", "bars": real_bars("day")},
+        {"symbol": "SPY", "interval": "hour", "bars": real_bars("hour")}]}}))
+    out = session.compute_signals("SPY")
+    assert out["decision"] in ("BUY", "SELL", "HOLD") and out["hourly_factors"] == "included"
+    assert len(out["factors"]) == len(fx.ALL_FACTORS)
+    assert all("learned_weight" in f and f["why"] for f in out["factors"].values())
+    assert session.learner.d["snapshots"][-1]["symbol"] == "SPY"
+    assert session.learner.report()["factors"][0]["factor"] in fx.ALL_FACTORS
