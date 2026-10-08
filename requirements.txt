@@ -1,5 +1,8 @@
-robin_stocks
+claude-agent-sdk>=0.2.159
 pandas
 numpy
-ta
 python-dotenv
+pytest
+# legacy equity bot only
+robin_stocks
+ta

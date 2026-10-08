@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .tokens/
 bot_state.json
+agent_state.json
+.state-*
+.pytest_cache/
