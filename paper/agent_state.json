@@ -1,0 +1,322 @@
+{
+  "positions": {},
+  "trade_log": [],
+  "learner": {
+    "version": 2,
+    "factors": {
+      "trend": {
+        "global": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "trend": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "range": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        }
+      },
+      "macd": {
+        "global": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "trend": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "range": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        }
+      },
+      "rsi": {
+        "global": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "trend": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "range": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        }
+      },
+      "adx": {
+        "global": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "trend": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "range": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        }
+      },
+      "volume_thrust": {
+        "global": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "trend": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "range": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        }
+      },
+      "premium_discount": {
+        "global": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "trend": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "range": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        }
+      },
+      "order_flow": {
+        "global": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "trend": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "range": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        }
+      },
+      "vwap": {
+        "global": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "trend": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "range": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        }
+      },
+      "structure": {
+        "global": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "trend": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "range": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        }
+      },
+      "liquidity_sweep": {
+        "global": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "trend": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "range": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        }
+      },
+      "fvg": {
+        "global": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "trend": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "range": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        }
+      },
+      "order_block": {
+        "global": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "trend": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "range": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        }
+      },
+      "ote": {
+        "global": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "trend": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "range": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        }
+      },
+      "market_trend": {
+        "global": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "trend": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "range": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        }
+      },
+      "vix": {
+        "global": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "trend": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "range": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        }
+      },
+      "relative_strength": {
+        "global": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "trend": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        },
+        "range": {
+          "A": 0.0,
+          "B": 0.0,
+          "asof": null
+        }
+      }
+    },
+    "calibration": {
+      "low": {
+        "A": 0.0,
+        "B": 0.0,
+        "n_trades": 0,
+        "win_r": 0.0,
+        "loss_r": 0.0,
+        "wins": 0,
+        "losses": 0
+      },
+      "medium": {
+        "A": 0.0,
+        "B": 0.0,
+        "n_trades": 0,
+        "win_r": 0.0,
+        "loss_r": 0.0,
+        "wins": 0,
+        "losses": 0
+      },
+      "high": {
+        "A": 0.0,
+        "B": 0.0,
+        "n_trades": 0,
+        "win_r": 0.0,
+        "loss_r": 0.0,
+        "wins": 0,
+        "losses": 0
+      }
+    },
+    "snapshots": [],
+    "trades_learned": 0,
+    "shadow_learned": 0,
+    "warm_start": {
+      "symbols": {},
+      "samples": 0
+    }
+  },
+  "iv_history": {
+    "SPY": {
+      "2026-10-08": 0.1328
+    }
+  }
+}
