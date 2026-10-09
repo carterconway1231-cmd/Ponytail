@@ -14,7 +14,7 @@
       "open_order_id": "paper-1-26bada82",
       "filled": true,
       "hwm": 0.9550000000000001,
-      "lwm": 0.9,
+      "lwm": 0.8550000000000004,
       "stop": null,
       "kind": "credit_spread",
       "long_option_id": "b1b64ca5-8403-4dfc-86bf-56ca55571b2f",
