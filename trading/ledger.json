@@ -1,0 +1,30 @@
+{
+ "breaker": {
+  "tripped": false
+ },
+ "config": {
+  "account": "955800222",
+  "account_label": "Agentic \u2022\u20220222",
+  "breaker_drawdown": 0.2,
+  "daily_loss_limit": 5.0,
+  "max_positions": 2,
+  "max_trades_per_day": 3,
+  "min_trades_per_day": 0,
+  "position_size": 10.0
+ },
+ "equity": [
+  {
+   "ts": "2026-10-10T01:04:26.090088+00:00",
+   "value": 29.42
+  }
+ ],
+ "peak": 29.42,
+ "positions": [],
+ "regime": {
+  "read": "Setup: no cycle run yet.",
+  "ts": "2026-10-09 21:04 ET"
+ },
+ "skips": [],
+ "today_unrealized": 0.0,
+ "trades": []
+}

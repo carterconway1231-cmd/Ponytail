@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Trading Dashboard</title>
+<!-- Rendered by `python -m trading.bot render` from trading/ledger.json. Do not hand-edit:
+     it shows data as of the last render, not real time. Reopen or refresh after each cycle. -->
+<style>
+:root{color-scheme:dark;--bg:#121211;--surface:#1a1a19;--line:#2a2a28;--text:#f0efec;--text2:#c3c2b7;
+--muted:#8f8e86;--accent:#3987e5;--good:#0ca30c;--warn:#fab219;--bad:#d03b3b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);
+font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:1080px;margin:0 auto;padding:28px 16px 48px}
+header{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:baseline;justify-content:space-between;margin-bottom:24px}
+h1{font-size:15px;font-weight:600;margin:0;color:var(--text2);letter-spacing:.02em}
+.status{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--text2)}
+.dot{width:9px;height:9px;border-radius:50%}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:12px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
+.label{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.big{font-size:30px;font-weight:600;font-variant-numeric:tabular-nums;margin-top:4px}
+.sub{font-size:13px;color:var(--text2);font-variant-numeric:tabular-nums}
+.grid2{display:grid;grid-template-columns:1fr;gap:12px;margin-top:12px}
+@media(min-width:860px){.grid2{grid-template-columns:3fr 2fr}}
+h2{font-size:13px;font-weight:600;margin:0 0 12px;color:var(--text2)}
+.chart{position:relative}.chart svg{display:block;width:100%;height:200px}
+.tip{position:absolute;pointer-events:none;background:#262624;border:1px solid var(--line);border-radius:6px;
+padding:6px 8px;font-size:12px;white-space:nowrap;display:none}
+.pos{padding:12px 0;border-top:1px solid var(--line)}.pos:first-of-type{border-top:0;padding-top:0}
+.row{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.sym{font-weight:600}.meta{color:var(--muted);font-size:12px}
+.bar{position:relative;height:6px;background:#2a2a28;border-radius:3px;margin:10px 0 4px}
+.bar i{position:absolute;top:-3px;width:2px;height:12px;background:var(--text)}
+.bar b{position:absolute;top:0;height:6px;border-radius:3px}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:7px 8px;border-top:1px solid var(--line);font-size:13px}
+th{color:var(--muted);font-weight:500;font-size:12px;border-top:0}
+td.n,th.n{text-align:right}.scroll{overflow-x:auto}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.chip{border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:12px;font-variant-numeric:tabular-nums}
+.up{color:var(--good)}.down{color:var(--bad)}.empty{color:var(--muted);font-size:13px}
+.tag{font-size:11px;border:1px solid var(--line);border-radius:4px;padding:1px 5px;color:var(--text2)}
+footer{margin-top:24px;color:var(--muted);font-size:12px}
+</style></head><body><div class="wrap">
+<header><h1>Agentic ••0222 · stock framework</h1><span class="status" id="status"></span></header>
+<section class="tiles" id="tiles"></section>
+<section class="card"><h2>Account equity</h2><div class="chart" id="chart"><div class="tip" id="tip"></div></div></section>
+<div class="grid2">
+<section class="card"><h2>Open positions</h2><div id="positions"></div></section>
+<section class="card"><h2>Market read</h2><div id="regime"></div></section>
+</div>
+<section class="card" style="margin-top:12px"><h2>Recent closed trades</h2><div class="scroll" id="trades"></div></section>
+<footer id="foot"></footer>
+</div>
+<script>
+const D={"status": {"account": "Agentic \u2022\u20220222", "equity": 29.42, "peak": 29.42, "drawdown": 0.0, "breaker": {"tripped": false}, "position_size_now": 10.0, "open_positions": "0/2", "daily_pnl": 0.0, "daily_loss_limit": 5.0, "entries_today": "0/3", "day_trades_last_5_sessions": 0, "entry_blockers": [], "metrics": {"trades": 0, "win_rate": null, "avg_win": null, "avg_loss": null, "expectancy_r": null, "total_pnl": 0, "r_distribution": {"<=-1R": 0, "-1R..0": 0, "0..1R": 0, "1R..2R": 0, ">=2R": 0}, "max_drawdown": 0.0, "avg_score": null, "organic": {"n": 0, "pnl": 0, "avg_r": null}, "forced": {"n": 0, "pnl": 0, "avg_r": null}, "by_strategy": {}}}, "positions": [], "trades": [], "equity": [{"ts": "2026-10-10T01:04:26.090088+00:00", "value": 29.42}], "regime": {"read": "Setup: no cycle run yet.", "ts": "2026-10-09 21:04 ET"}, "generated": "2026-10-09 21:04 ET"};const S=D.status;
+const $=id=>document.getElementById(id);
+const usd=v=>v==null?"—":(v<0?"−$":"$")+Math.abs(v).toFixed(2);
+const pct=v=>v==null?"—":(v>0?"+":v<0?"−":"")+Math.abs(v).toFixed(2)+"%";
+const sign=v=>v>0?"up":v<0?"down":"";
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const today=D.generated.slice(0,10);
+const stopHit=D.trades.some(t=>t.closed_day===today&&/stop/i.test(t.reason||""));
+let st=["var(--good)","● Flat / healthy"];
+if(S.breaker&&S.breaker.tripped) st=["var(--bad)","■ Circuit breaker tripped — entries paused"];
+else if(stopHit) st=["var(--bad)","■ Stop hit today"];
+else if(D.positions.length) st=["var(--warn)","▲ Positions open — being watched"];
+$("status").innerHTML=`<span class="dot" style="background:${st[0]}"></span>${st[1]}`;
+const eq=S.equity, first=D.equity.length?D.equity[0].value:null;
+const pnlPct=eq&&eq-S.daily_pnl?S.daily_pnl/(eq-S.daily_pnl)*100:null;
+const M=S.metrics;
+const tiles=[["Equity",usd(eq),first!=null?`since start ${usd(eq-first)}`:"no equity recorded yet"],
+["Today's P&L",`<span class="${sign(S.daily_pnl)}">${usd(S.daily_pnl)}</span>`,`${pct(pnlPct)} · limit −$${S.daily_loss_limit.toFixed(2)}`],
+["Open positions",S.open_positions,`entries today ${S.entries_today} · size $${S.position_size_now}`],
+["Win rate",M.win_rate==null?"—":Math.round(M.win_rate*100)+"%",`${M.trades} closed · avg score ${M.avg_score??"—"}`]];
+$("tiles").innerHTML=tiles.map(t=>`<div class="card"><div class="label">${t[0]}</div><div class="big">${t[1]}</div><div class="sub">${t[2]}</div></div>`).join("");
+// equity line: single series, crosshair + tooltip
+(function(){const pts=D.equity.map(e=>({t:new Date(e.ts),v:e.value}));const el=$("chart");
+if(pts.length<2){el.insertAdjacentHTML("beforeend",`<p class="empty">The equity line appears after two cycles have recorded account value.</p>`);return}
+const W=1000,H=200,P={l:52,r:12,t:12,b:24};const vs=pts.map(p=>p.v);let lo=Math.min(...vs),hi=Math.max(...vs);
+if(hi-lo<1){lo-=.5;hi+=.5}const t0=pts[0].t,t1=pts[pts.length-1].t;
+const x=i=>P.l+(W-P.l-P.r)*(pts.length===1?0:i/(pts.length-1)),y=v=>P.t+(H-P.t-P.b)*(1-(v-lo)/(hi-lo));
+const ticks=[lo,(lo+hi)/2,hi];
+let s=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Account equity over time">`;
+s+=ticks.map(v=>`<line x1="${P.l}" x2="${W-P.r}" y1="${y(v)}" y2="${y(v)}" stroke="#2a2a28"/><text x="${P.l-8}" y="${y(v)+4}" fill="#8f8e86" font-size="11" text-anchor="end">$${v.toFixed(2)}</text>`).join("");
+s+=`<text x="${P.l}" y="${H-6}" fill="#8f8e86" font-size="11">${t0.toLocaleDateString()}</text><text x="${W-P.r}" y="${H-6}" fill="#8f8e86" font-size="11" text-anchor="end">${t1.toLocaleDateString()}</text>`;
+s+=`<polyline fill="none" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke" points="${pts.map((p,i)=>x(i)+","+y(p.v)).join(" ")}"/>`;
+s+=`<line id="xh" y1="${P.t}" y2="${H-P.b}" stroke="#8f8e86" stroke-dasharray="3 3" visibility="hidden"/><circle id="xd" r="4" fill="var(--accent)" stroke="#1a1a19" stroke-width="2" visibility="hidden"/>`;
+s+=`<rect x="${P.l}" y="0" width="${W-P.l-P.r}" height="${H}" fill="transparent" id="hit"/></svg>`;
+el.insertAdjacentHTML("afterbegin",s);const svg=el.querySelector("svg"),tip=$("tip");
+svg.addEventListener("mousemove",e=>{const r=svg.getBoundingClientRect();const fx=(e.clientX-r.left)/r.width*W;
+const i=Math.max(0,Math.min(pts.length-1,Math.round((fx-P.l)/(W-P.l-P.r)*(pts.length-1))));
+const xh=$("xh"),xd=$("xd");xh.setAttribute("x1",x(i));xh.setAttribute("x2",x(i));xh.setAttribute("visibility","visible");
+xd.setAttribute("cx",x(i));xd.setAttribute("cy",y(pts[i].v));xd.setAttribute("visibility","visible");
+tip.style.display="block";tip.innerHTML=`${pts[i].t.toLocaleString()}<br><b>$${pts[i].v.toFixed(2)}</b>`;
+const px=x(i)/W*r.width;tip.style.left=Math.min(px+12,r.width-140)+"px";tip.style.top="8px"});
+svg.addEventListener("mouseleave",()=>{tip.style.display="none";$("xh").setAttribute("visibility","hidden");$("xd").setAttribute("visibility","hidden")})})();
+// positions
+$("positions").innerHTML=D.positions.length?D.positions.map(p=>{const px=p.mark??p.entry,u=(px-p.entry)*p.qty;
+const span=p.target-p.stop,at=Math.max(0,Math.min(1,(px-p.stop)/span)),en=(p.entry-p.stop)/span;
+return `<div class="pos"><div class="row"><span><span class="sym">${esc(p.symbol)}</span> <span class="tag">${esc(p.strategy)} · ${esc(p.tier)}</span></span>
+<span class="${sign(u)}">${usd(u)}</span></div>
+<div class="row meta"><span>entry ${usd(p.entry)} · now ${usd(px)} · ${(+p.qty).toFixed(4)} sh</span><span>opened ${esc(p.opened_day)} · horizon ${p.horizon_days}d</span></div>
+<div class="bar" title="stop ${usd(p.stop)} → target ${usd(p.target)}"><b style="left:0;width:${en*100}%;background:#3a2222"></b><b style="left:${en*100}%;width:${(1-en)*100}%;background:#1f3324"></b><i style="left:calc(${at*100}% - 1px)"></i></div>
+<div class="row meta"><span>stop ${usd(p.stop)} (${usd((px-p.stop)*p.qty)} away)</span><span>target ${usd(p.target)} (${usd((p.target-px)*p.qty)} away)</span></div>
+<div class="meta" style="margin-top:6px">${esc(p.thesis)}</div></div>`}).join(""):`<p class="empty">No open positions.</p>`;
+// regime
+const R=D.regime||{};$("regime").innerHTML=(R.chips&&R.chips.length?`<div class="chips">${R.chips.map(c=>`<span class="chip"><span class="${sign(c.chg)}">${c.chg>0?"▲":c.chg<0?"▼":"■"}</span> ${esc(c.label)} ${pct(c.chg)}</span>`).join("")}</div>`:"")+
+(R.read?`<p style="margin:0">${esc(R.read)}</p><p class="meta">${esc(R.ts||"")}</p>`:`<p class="empty">No market read recorded yet.</p>`);
+// trades
+$("trades").innerHTML=D.trades.length?`<table><thead><tr><th>Symbol</th><th>Strategy</th><th class="n">Entry</th><th class="n">Exit</th><th class="n">P&amp;L</th><th class="n">R</th><th class="n">Score</th><th>Tag</th><th>Closed</th></tr></thead><tbody>${D.trades.map(t=>`<tr><td class="sym">${esc(t.symbol)}</td><td>${esc(t.strategy)}</td><td class="n">${usd(t.entry)}</td><td class="n">${usd(t.exit)}</td><td class="n ${sign(t.pnl)}">${usd(t.pnl)}</td><td class="n">${t.r.toFixed(2)}</td><td class="n">${t.score.total}</td><td><span class="tag">${esc(t.tag)}</span></td><td>${esc(t.closed_day)}</td></tr>`).join("")}</tbody></table>`:`<p class="empty">No closed trades yet.</p>`;
+$("foot").textContent=`Rendered ${D.generated} from trading/ledger.json. Static snapshot: refresh after the next cycle re-renders it.`;
+</script></body></html>
