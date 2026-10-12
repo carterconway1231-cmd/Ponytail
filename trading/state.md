@@ -79,3 +79,9 @@ Entry template:
 - Options scan (first cycle with options): no stock signal passed, so no debit spread or call to consider. SPY/QQQ put credit spreads need ~$85 max loss vs the $14.74 option cap and $19.42 buying power; not possible at this account size. Skipped without quoting chains.
 - Decisions: none. Hold AMD.
 - Day: P&L +$0.07 of −$7.36 limit · entries 1/3 · open 1/2 · day trades (5 sessions) 0
+
+## 2026-10-12 15:47 ET (completed 18:28 ET after a worker restart)
+- Stop check at 15:48: AMD $593.66, +3.2R vs initial risk, stop at breakeven. The mean-reversion rule prefers closing a same-day entry before 15:50 with ≥1R in hand, so the plan was to sell (a day trade, 1 of 3).
+- The session worker restarted mid-cycle; the sell was not placed before 16:00. Reviewed at 18:27 ET: market closed. A market order now would only queue for tomorrow's open, so it was not sent. **AMD held overnight** (0.017029 sh, closed $594.15, +$0.12), stop $587.22 breakeven, target $608.10, horizon to Oct 15. Thesis intact (AMD caught up to SMH into the close: −2.3% vs −2.0%); no AMD catalyst before the open (earnings Nov 3). Tomorrow's 9:47 cycle re-evaluates exit vs hold.
+- Scans (15:48): no new mean-reversion or momentum candidates beyond the morning's failures; options unaffordable (cap $14.74, BP $19.42). No entry.
+- Day summary: 1 entry (AMD), 0 exits, P&L +$0.12 unrealized, equity $29.53, 0 day trades.

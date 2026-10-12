@@ -40,9 +40,13 @@
   {
    "ts": "2026-10-12T18:51:20.204217+00:00",
    "value": 29.49
+  },
+  {
+   "ts": "2026-10-12T22:27:57.753792+00:00",
+   "value": 29.53
   }
  ],
- "peak": 29.5,
+ "peak": 29.53,
  "positions": [
   {
    "cost": 10.0,
@@ -50,8 +54,8 @@
    "horizon_days": 3,
    "id": "d3ce6776",
    "initial_stop": 585.24,
-   "mark": 591.305,
-   "marked_at": "2026-10-12T18:51:20.266809+00:00",
+   "mark": 594.15,
+   "marked_at": "2026-10-12T22:27:57.790417+00:00",
    "opened_at": "2026-10-12T14:50:47.751101+00:00",
    "opened_day": "2026-10-12",
    "order_id": "6accf3af-7296-41c1-a28e-e1fdfbaac3d2",
@@ -147,8 +151,8 @@
    }
   ],
   "chips_ts": "2026-10-12T18:51:20.378218+00:00",
-  "read": "Semis -2.1%, tech -1.4% still lead lower; staples, health, energy, comm, financials green; SPY -0.2%. Steady rotation all day.",
-  "ts": "2026-10-12 14:51 ET"
+  "read": "Close: semis -2.0%, tech -1.3%, defensives and energy green, SPY -0.1%. One-day rotation out of chips (CXMT memory news).",
+  "ts": "2026-10-12 18:27 ET"
  },
  "skips": [
   {
@@ -257,7 +261,7 @@
    "why": "unchanged: gate 4 FAIL (below 50-day, lower highs)"
   }
  ],
- "today_unrealized": 0.07,
+ "today_unrealized": 0.12,
  "today_unrealized_day": "2026-10-12",
  "trades": []
 }
