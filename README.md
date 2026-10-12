@@ -1,5 +1,12 @@
 # Ponytail
 
+> **Active bot (Oct 2026): the framework in [`trading/`](trading/framework.md).** Long-only
+> fractional stock trades on the Robinhood Agentic account ($10 per entry, 2 positions max, $5 daily
+> loss limit, 20% drawdown breaker; mean-reversion and momentum scanned every hourly cycle) plus
+> defined-risk options ($100 max loss each) per [`trading/strategies/options.md`](trading/strategies/options.md).
+> `python -m trading.bot status` shows limits and metrics; `trading/dashboard.html` is the rendered
+> view. The options agent described below is retired from the schedule and kept for research.
+
 An autonomous options trading agent for Robinhood. A deterministic signal, volatility,
 pricing and risk engine is wrapped around a Claude agent loop (Claude Agent SDK) that
 trades through Robinhood's official MCP server.
