@@ -44,7 +44,7 @@ itself is disconnected, wait for it to reconnect; ToolSearch waits for servers s
 ## §1 Mission
 
 Grow the account on a risk-adjusted basis. This is a **validation phase, not a profit phase**:
-position size is fixed at $10 regardless of conviction, so strategy quality is the only variable
+position size is a fixed share of account value (§3) regardless of conviction, so strategy quality is the only variable
 and the data says which rules work. Survival first. A month of small, well-scored trades that
 lose a little is a better outcome than a lucky month that taught nothing.
 
@@ -102,7 +102,7 @@ entries use `review_option_order` / `place_option_order` (limit, fresh `ref_id`)
 `$B open-option`. Stock entries:
 - `$B gate SYMBOL`: must return no blockers.
 - **Order type.** Limit orders are the default, but Robinhood only allows fractional shares as
-  **market orders in regular hours** (see §6). At $10 per position almost every entry is
+  **market orders in regular hours** (see §6). At these position sizes almost every entry is
   fractional, so entries are market orders sized by `dollar_amount`. That is acceptable only
   because the universe is restricted to large, liquid, tight-spread names. If a name's quoted
   spread is wider than 0.10% of price at entry time, skip it. If a whole share fits within the size,
