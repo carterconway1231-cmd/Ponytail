@@ -128,3 +128,15 @@ def test_render_escapes_and_embeds_ledger(ledger, capsys):
     page = (ledger / "dashboard.html").read_text()
     assert "</script><b>" not in page and "<\\/script>" in page
     assert "Agentic ••0222" in page and '"symbol": "NVDA"' in page
+
+
+def test_raised_stop_keeps_r_measured_from_the_initial_stop(ledger, capsys):
+    run("open", "NVDA", *OPEN, capsys=capsys)
+    with pytest.raises(SystemExit, match="only move up"):
+        bot.main(["stop", "NVDA", "96", "--note", "lower"])
+    run("stop", "NVDA", "100", "--note", "breakeven", capsys=capsys)
+    row = run("check", quotes_file(ledger, "s.json", {"NVDA": (103.0, 100.0)}), capsys=capsys)["positions"][0]
+    assert row["r_now"] == 1.0 and row["cushion_r"] == 1.0 and row["action"] == "HOLD"
+    t = run("close", "NVDA", "--exit", "100", "--reason", "breakeven stop", "--setup", "30", "--execution", "30",
+            "--outcome", "10", "--note", "scratch", capsys=capsys)
+    assert t["r"] == 0.0 and t["initial_stop"] == 97

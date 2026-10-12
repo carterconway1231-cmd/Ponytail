@@ -10,6 +10,7 @@ arithmetic and record-keeping so it is the same every cycle:
                              --horizon DAYS --thesis "..." [--order-id ID] [--forced]
   python -m trading.bot close SYMBOL --exit P --reason R --setup 0-40 --execution 0-35 --outcome 0-25 --note "..."
   python -m trading.bot skip SYMBOL --strategy S --why "..." [--price P]
+  python -m trading.bot stop SYMBOL PRICE --note "..."        # raise a stop (never lower); R keeps the initial stop
   python -m trading.bot equity VALUE                         # account value from get_portfolio
   python -m trading.bot regime "one-line read"
   python -m trading.bot status                               # limits, breaker, metrics
@@ -214,12 +215,12 @@ def check(led, quotes):
         if not q:
             rows.append({"symbol": p["symbol"], "action": "NO_QUOTE", "why": "fetch a quote before deciding"})
             continue
-        px, risk = q["last"], p["entry"] - p["stop"]
+        px, risk = q["last"], p["entry"] - p.get("initial_stop", p["stop"])
         p["mark"], p["prev_close"], p["marked_at"] = px, q["prev"], now().isoformat()
         base = p["entry"] if p["opened_day"] == today else q["prev"]
         unreal_today += (px - base) * p["qty"]
         r_now = (px - p["entry"]) / risk if risk > 0 else 0.0
-        cushion_r = (px - p["stop"]) / risk if risk > 0 else 0.0
+        cushion_r = (px - p["stop"]) / risk if risk > 0 else 0.0  # R is always the initial risk
         held = (datetime.fromisoformat(today) - datetime.fromisoformat(p["opened_day"])).days
         if px <= p["stop"]:
             action, why = "EXIT_STOP", "at or through the stop"
@@ -297,7 +298,8 @@ def open_position(led, a):
         raise SystemExit("REFUSED: " + "; ".join(fails))
     p = {"id": uuid.uuid4().hex[:8], "symbol": sym, "strategy": a.strategy, "tier": a.tier,
          "tag": "forced" if a.forced else "organic", "entry": a.entry, "qty": a.qty,
-         "cost": round(a.entry * a.qty, 2), "stop": a.stop, "target": a.target, "horizon_days": a.horizon,
+         "cost": round(a.entry * a.qty, 2), "stop": a.stop, "initial_stop": a.stop, "target": a.target,
+         "horizon_days": a.horizon,
          "thesis": a.thesis, "order_id": a.order_id, "opened_at": now().isoformat(), "opened_day": today_et(),
          "mark": a.entry, "prev_close": None}
     led["positions"].append(p)
@@ -312,7 +314,7 @@ def close_position(led, a):
     for name, v, hi in (("setup", a.setup, 40), ("execution", a.execution, 35), ("outcome", a.outcome, 25)):
         if not 0 <= v <= hi:
             raise SystemExit(f"{name} score must be 0-{hi}")
-    risk = p["entry"] - p["stop"]
+    risk = p["entry"] - p.get("initial_stop", p["stop"])
     pnl = round((a.exit - p["entry"]) * p["qty"], 2)
     day = today_et()
     base = p["entry"] if p["opened_day"] == day or not p.get("prev_close") else p["prev_close"]
@@ -325,6 +327,19 @@ def close_position(led, a):
     led["positions"].remove(p)
     led["trades"].append(t)
     return t
+
+
+def move_stop(led, symbol, stop, note):
+    """Raise (never lower) a stop. R stays measured against the initial stop."""
+    p = next((p for p in led["positions"] if p["symbol"] == symbol), None)
+    if p is None:
+        raise SystemExit(f"no open position in {symbol}")
+    if stop < p["stop"]:
+        raise SystemExit(f"REFUSED: stops only move up ({stop} < {p['stop']})")
+    p.setdefault("initial_stop", p["stop"])
+    p["stop"], p["trimmed"] = stop, True
+    p.setdefault("stop_moves", []).append({"ts": now().isoformat(), "stop": stop, "note": note})
+    return p
 
 
 def record_equity(led, value):
@@ -535,6 +550,8 @@ def main(argv=None):
     s = sub.add_parser("skip")
     s.add_argument("symbol"); s.add_argument("--strategy", required=True); s.add_argument("--why", required=True)
     s.add_argument("--price", type=float)
+    s = sub.add_parser("stop"); s.add_argument("symbol"); s.add_argument("price", type=float)
+    s.add_argument("--note", required=True)
     s = sub.add_parser("equity"); s.add_argument("value", type=float)
     s = sub.add_parser("regime"); s.add_argument("read")
     sub.add_parser("status"); sub.add_parser("render"); sub.add_parser("gate").add_argument("symbol")
@@ -559,6 +576,8 @@ def main(argv=None):
     elif a.cmd == "skip":
         out = {"ts": now().isoformat(), "symbol": a.symbol.upper(), "strategy": a.strategy, "why": a.why, "price": a.price}
         led["skips"].append(out); led["skips"] = led["skips"][-500:]; save(led)
+    elif a.cmd == "stop":
+        out = move_stop(led, a.symbol.upper(), a.price, a.note); save(led)
     elif a.cmd == "equity":
         out = {"drawdown": record_equity(led, a.value), "breaker": led["breaker"]}; save(led)
     elif a.cmd == "regime":

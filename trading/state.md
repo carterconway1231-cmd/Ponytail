@@ -50,3 +50,13 @@ Entry template:
 - Momentum scan: META only standout, gate 3 FAIL (no retest yet); CRM, MSFT, AAPL not standouts. No new entry.
 - Decisions: hold AMD with breakeven stop; no new trade.
 - Day: P&L +$0.07 of −$5.00 limit · entries 1/3 · open 1/2 · day trades (5 sessions) 0
+
+## 2026-10-12 12:47 ET
+- Stop check: AMD $591.83, +$0.08, +2.3R vs initial risk, stop at breakeven $587.22: HOLD. RS vs SMH: −2.7% vs −1.8%, steady.
+- Fix: the 11:47 stop move made `check` measure R against the new breakeven stop (showed 1023R). `bot.py` now keeps `initial_stop` and measures R and cushion against it; added a `stop` command that only moves stops up, plus a test. AMD's initial stop set to $585.24.
+- Reconciliation: equity $29.50 · broker vs ledger: match.
+- Market read: same rotation as the morning (semis/tech down, energy/comm/staples up), SPY flat.
+- Mean-reversion scan (looser tier open): ORCL −2.9% FAIL gate 4 (6% under 50-day, lower highs since September); gate 1 unclear, no news found. MU FAIL gate 1. AMD held.
+- Momentum scan: META FAIL gate 3 (no retest). NKE standout (+1.2%, +1.7 vs XLY) FAIL gates 2/3 (bounce after the Oct 2 earnings gap-down, 3-month downtrend). CRM, AAPL, MSFT not standouts.
+- Decisions: no new trade; hold AMD.
+- Day: P&L +$0.08 of −$5.00 limit · entries 1/3 · open 1/2 · day trades (5 sessions) 0
