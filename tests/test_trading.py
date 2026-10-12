@@ -140,3 +140,52 @@ def test_raised_stop_keeps_r_measured_from_the_initial_stop(ledger, capsys):
     t = run("close", "NVDA", "--exit", "100", "--reason", "breakeven stop", "--setup", "30", "--execution", "30",
             "--outcome", "10", "--note", "scratch", capsys=capsys)
     assert t["r"] == 0.0 and t["initial_stop"] == 97
+
+
+SPREAD = ["--structure", "call_debit_spread", "--strategy", "momentum", "--tier", "standard", "--contracts", "1",
+          "--price", "0.40", "--width", "1", "--expiry", "2099-01-15",
+          "--legs", '[{"option_id":"a","strike":36,"type":"call","side":"buy"},{"option_id":"b","strike":37,"type":"call","side":"sell"}]',
+          "--underlying", "35.0", "--stop", "34.0", "--target", "37.5", "--horizon", "10",
+          "--thesis", "NKE leads XLY on upgrade, held base"]
+
+
+def test_option_spread_lifecycle_and_exits(ledger, capsys):
+    p = run("open-option", "NKE", *SPREAD, capsys=capsys)
+    assert p["max_loss"] == 40.0 and p["kind"] == "option"
+    q = quotes_file(ledger, "o.json", {"NKE": (35.5, 35.0)})
+    row = run("check", q, capsys=capsys)["positions"][0]
+    assert row["action"] == "HOLD" and row["unrealized"] == 0.0
+    run("optmark", "NKE", "0.82", capsys=capsys)
+    row = run("check", q, capsys=capsys)["positions"][0]
+    assert row["action"] == "EXIT_TARGET" and row["unrealized"] == 42.0 and row["r_now"] == 1.05
+    run("optmark", "NKE", "0.19", capsys=capsys)
+    assert run("check", q, capsys=capsys)["positions"][0]["action"] == "EXIT_STOP"
+    t = run("close", "NKE", "--exit", "0.20", "--reason", "50% stop", "--setup", "30", "--execution", "30",
+            "--outcome", "10", "--note", "faded", capsys=capsys)
+    assert t["pnl"] == -20.0 and t["r"] == -0.5
+
+
+def test_put_credit_spread_rules_and_caps(ledger, capsys):
+    base = ["--structure", "put_credit_spread", "--strategy", "premium", "--tier", "premium", "--contracts", "1",
+            "--width", "1", "--expiry", "2099-01-15", "--legs", "[]", "--underlying", "778", "--stop", "740",
+            "--target", "778", "--horizon", "45", "--thesis", "IV above RV, short 0.20 delta, 45 DTE"]
+    with pytest.raises(SystemExit, match="SPY/QQQ only"):
+        bot.main(["open-option", "AAPL", *base, "--price", "0.15"])
+    with pytest.raises(SystemExit, match="buying power"):
+        bot.main(["open-option", "SPY", *base, "--price", "0.15", "--buying-power", "50"])
+    p = run("open-option", "SPY", *base, "--price", "0.15", capsys=capsys)
+    assert p["max_loss"] == 85.0
+    q = quotes_file(ledger, "s.json", {"SPY": (779.0, 778.0)})
+    run("optmark", "SPY", "0.07", capsys=capsys)
+    assert run("check", q, capsys=capsys)["positions"][0]["action"] == "EXIT_TARGET"
+    run("optmark", "SPY", "0.31", capsys=capsys)
+    row = run("check", q, capsys=capsys)["positions"][0]
+    assert row["action"] == "EXIT_STOP" and row["unrealized"] == -16.0
+
+
+def test_option_cap_refuses_oversized_trades(ledger, capsys):
+    args = list(SPREAD)
+    args[args.index("call_debit_spread")] = "long_call"
+    args[args.index("0.40")] = "1.55"
+    with pytest.raises(SystemExit, match=r"max loss \$155.00 > option cap \$100.00"):
+        bot.main(["open-option", "NKE", *args])

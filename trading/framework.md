@@ -96,7 +96,10 @@ then answer the strategy file's gate questions in writing in `state.md`. One FAI
 Log every candidate that doesn't trade: `$B skip SYMBOL --strategy … --why "…" --price …`.
 
 **7. Entry.** Before any order, write in `state.md`: one-line thesis (why this, why now), stop,
-target, max holding horizon. Then:
+target, max holding horizon. For a candidate that passed its gates, first check whether an option
+structure qualifies under `strategies/options.md` (and SPY/QQQ credit spreads every cycle); option
+entries use `review_option_order` / `place_option_order` (limit, fresh `ref_id`) and
+`$B open-option`. Stock entries:
 - `$B gate SYMBOL`: must return no blockers.
 - **Order type.** Limit orders are the default, but Robinhood only allows fractional shares as
   **market orders in regular hours** (see §6). At $10 per position almost every entry is
@@ -125,13 +128,15 @@ anomaly halted the cycle, or an order was blocked. Otherwise stay quiet.
 | Parameter | Value |
 |---|---|
 | Account | Robinhood Agentic, 955800222 (••0222). Starting equity $29.42 (+$30 deposit pending) |
-| Position size | **$10.00 fixed** per entry, every entry, every strategy |
+| Position size | **$10.00 fixed** per stock entry, every entry, every strategy |
+| Option max loss | **$100** per option trade (debit paid, or width − credit), and never more than buying power. See `strategies/options.md` |
 | Max concurrent positions | **2**, shared across all strategies |
 | Daily loss limit | **$5.00** (realized + today's unrealized). Hit it → no new entries today; manage exits only |
 | Circuit breaker | **20% drawdown from peak equity** → size halves to $5 and new entries pause until the user reviews and resets it |
 | Max entries per day | 3 |
 | Minimum trades per day | none: trades are taken only when a setup qualifies |
-| Leverage / options / shorting | **none**. Long stock only, cash only, even though the account has margin and options approval |
+| Leverage / shorting | **none**. Cash only, even though the account has margin |
+| Options | **defined-risk, long-biased only** (added 2026-10-12): call debit spreads, long calls, SPY/QQQ put credit spreads. No naked short options, no puts bought, no ratio or undefined-risk structures |
 | Averaging down | **never**. One position per symbol; a broken thesis is exited, not added to |
 
 Why fixed dollars and not a risk-percent formula: on a ~$30–60 account, "risk 1% per trade" with a
@@ -150,6 +155,7 @@ trips are allowed only if `review_equity_order` raises no PDT alert. `$B status`
 |---|---|---|
 | Mean-reversion | `strategies/mean_reversion.md` | Runs in parallel with the others every cycle; full universe re-scanned each time |
 | Momentum / relative strength | `strategies/momentum.md` | Runs in parallel with the others every cycle; full universe re-scanned each time |
+| Options | `strategies/options.md` | Option expression of any passing stock signal, plus SPY/QQQ put credit spreads scanned every cycle from 10:47 ET |
 
 ## §5 Metrics
 
@@ -184,6 +190,13 @@ on a bad process" from "lost despite good process". Both are more useful than th
 ## §6 Known infrastructure caveats
 
 Append the first time a new one is found, so it isn't rediscovered.
+
+- **Option sizing vs account size (2026-10-12).** At $10 no option trade on this universe fits
+  (the cheapest real one, a $1-wide OTM call spread on a ~$35 stock, costs ~$25-30). The cap is
+  $100, but buying power (~$19-49) is the real limit until the account grows, and one option
+  stop can trip the $5 daily limit and the 20% breaker by itself.
+- **Option marks.** `$B check` cannot price options from stock quotes: quote the legs and run
+  `$B optmark` for every open option position each cycle, or `check` returns NEED_MARK.
 
 - **Fractional shares: no resting stops, market orders only.** Robinhood fractional and
   dollar-amount orders are `type=market`, `market_hours=regular_hours` only. They can't carry a stop

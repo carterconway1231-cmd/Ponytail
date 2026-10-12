@@ -8,6 +8,10 @@ arithmetic and record-keeping so it is the same every cycle:
   python -m trading.bot check QUOTES.json                    # stop / target / horizon check on open positions
   python -m trading.bot open SYMBOL --strategy S --tier T --entry P --qty Q --stop P --target P
                              --horizon DAYS --thesis "..." [--order-id ID] [--forced]
+  python -m trading.bot open-option SYMBOL --structure S --strategy S --tier T --contracts N --price P
+                             [--width W] --expiry DATE --legs JSON --underlying P --stop P --target P
+                             --horizon DAYS --thesis "..." [--buying-power BP] [--order-id ID]
+  python -m trading.bot optmark SYMBOL VALUE                 # per-share option/spread value this cycle
   python -m trading.bot close SYMBOL --exit P --reason R --setup 0-40 --execution 0-35 --outcome 0-25 --note "..."
   python -m trading.bot skip SYMBOL --strategy S --why "..." [--price P]
   python -m trading.bot stop SYMBOL PRICE --note "..."        # raise a stop (never lower); R keeps the initial stop
@@ -45,7 +49,18 @@ CONFIG = {
     "breaker_drawdown": 0.20,    # from peak equity: halve size, pause entries until reviewed
     "max_trades_per_day": 3,     # entries; also keeps day trades under the PDT count
     "min_trades_per_day": 0,
+    "option_max_risk": 100.0,    # max loss per option trade (debit paid, or width - credit for credit spreads)
 }
+
+# option structures: all defined-risk, all bullish (the framework has no bearish strategy)
+STRUCTURES = ("long_call", "call_debit_spread", "put_credit_spread")
+OPT_STOP_FRACTION = 0.5      # debit trades: exit when value falls to 50% of the debit
+OPT_TAKE_MULTIPLE = 2.0      # long call: take profit at 2x the debit
+SPREAD_TAKE_OF_WIDTH = 0.8   # debit spread: take profit at 80% of max value
+CREDIT_TAKE = 0.5            # credit spread: take profit when it costs <= 50% of the credit to close
+CREDIT_STOP = 2.0            # credit spread: stop when it costs >= 2x the credit to close
+DEBIT_EXIT_DTE = 7           # debit trades: exit with a week left
+CREDIT_MANAGE_DTE = 21       # credit spreads: close at 21 days to expiry
 
 INDICES = ["SPY", "QQQ", "IWM"]
 SECTORS = {"XLK": "Tech", "SMH": "Semis", "XLC": "Comm", "XLY": "Discretionary", "XLF": "Financials",
@@ -215,6 +230,11 @@ def check(led, quotes):
         if not q:
             rows.append({"symbol": p["symbol"], "action": "NO_QUOTE", "why": "fetch a quote before deciding"})
             continue
+        if p.get("kind") == "option":
+            row, today_change = check_option(p, q, today)
+            unreal_today += today_change
+            rows.append(row)
+            continue
         px, risk = q["last"], p["entry"] - p.get("initial_stop", p["stop"])
         p["mark"], p["prev_close"], p["marked_at"] = px, q["prev"], now().isoformat()
         base = p["entry"] if p["opened_day"] == today else q["prev"]
@@ -241,6 +261,71 @@ def check(led, quotes):
     led["today_unrealized"] = round(unreal_today, 2)
     led["today_unrealized_day"] = today
     return rows
+
+
+def option_pnl(p, value):
+    """Dollar P&L of an option position at a per-share value (debit: spread/option value;
+    credit: cost to close)."""
+    sign = -1 if p["structure"] == "put_credit_spread" else 1
+    return round(sign * (value - p["entry"]) * 100 * p["qty"], 2)
+
+
+def option_max_loss(structure, price, contracts, width=None):
+    if structure == "put_credit_spread":
+        return round((width - price) * 100 * contracts, 2)
+    return round(price * 100 * contracts, 2)
+
+
+def check_option(p, q, today):
+    """Exit rules for option positions. The underlying quote drives the strategy stop/target;
+    the option mark (set with `optmark` each cycle) drives the option rules."""
+    px = q["last"]
+    p["underlying_mark"], p["marked_at"] = px, now().isoformat()
+    val = p.get("mark")
+    dte = (datetime.fromisoformat(p["expiry"]) - datetime.fromisoformat(today)).days
+    held = (datetime.fromisoformat(today) - datetime.fromisoformat(p["opened_day"])).days
+    credit = p["structure"] == "put_credit_spread"
+    pnl = option_pnl(p, val) if val is not None else None
+    if val is None or p.get("marked_day") != today:
+        action, why = "NEED_MARK", "quote the legs and run `optmark` before deciding"
+    elif credit and val >= CREDIT_STOP * p["entry"]:
+        action, why = "EXIT_STOP", f"cost to close {val} >= {CREDIT_STOP}x credit"
+    elif credit and px <= p["stop"]:
+        action, why = "EXIT_STOP", "underlying at or below the short strike"
+    elif not credit and (px <= p["stop"] or val <= OPT_STOP_FRACTION * p["entry"]):
+        action, why = "EXIT_STOP", "underlying stop hit or option value at 50% of debit"
+    elif credit and val <= CREDIT_TAKE * p["entry"]:
+        action, why = "EXIT_TARGET", "50% of the credit captured"
+    elif p["structure"] == "long_call" and val >= OPT_TAKE_MULTIPLE * p["entry"]:
+        action, why = "EXIT_TARGET", "option doubled"
+    elif p["structure"] == "call_debit_spread" and val >= SPREAD_TAKE_OF_WIDTH * p["width"]:
+        action, why = "EXIT_TARGET", "spread at 80% of max value"
+    elif not credit and px >= p["target"]:
+        action, why = "EXIT_TARGET", "underlying reached the strategy target"
+    elif dte <= (CREDIT_MANAGE_DTE if credit else DEBIT_EXIT_DTE):
+        action, why = "EXIT_HORIZON", f"{dte} days to expiry"
+    elif not credit and held > p["horizon_days"]:
+        action, why = "EXIT_HORIZON", f"held {held}d > {p['horizon_days']}d horizon"
+    else:
+        action, why = "HOLD", "check thesis and relative strength"
+    base = p.get("day_open_mark", p["entry"])
+    today_change = option_pnl(p, val) - option_pnl(p, base) if val is not None else 0.0
+    row = {"symbol": p["symbol"], "kind": "option", "structure": p["structure"], "strategy": p["strategy"],
+           "underlying": px, "stop": p["stop"], "target": p["target"], "entry": p["entry"], "mark": val,
+           "unrealized": pnl, "r_now": round(pnl / p["max_loss"], 2) if pnl is not None else None,
+           "dte": dte, "held_days": held, "action": action, "why": why}
+    return row, today_change
+
+
+def mark_option(led, symbol, value):
+    p = next((p for p in led["positions"] if p["symbol"] == symbol and p.get("kind") == "option"), None)
+    if p is None:
+        raise SystemExit(f"no open option position on {symbol}")
+    today = today_et()
+    if p.get("marked_day") != today:
+        p["day_open_mark"] = p.get("mark", p["entry"]) if p["opened_day"] != today else p["entry"]
+    p["mark"], p["marked_day"] = value, today
+    return {"symbol": symbol, "mark": value, "unrealized": option_pnl(p, value)}
 
 
 def realized_today(led, day=None):
@@ -306,6 +391,41 @@ def open_position(led, a):
     return p
 
 
+def open_option(led, a):
+    sym = a.symbol.upper()
+    fails = gate(led, sym)
+    cap = led["config"]["option_max_risk"]
+    if a.structure != "long_call" and not a.width:
+        fails.append("spreads need --width")
+    if a.structure == "call_debit_spread" and a.width and a.price >= a.width:
+        fails.append("debit must be less than the width")
+    if a.structure == "put_credit_spread" and a.width and a.price >= a.width:
+        fails.append("credit must be less than the width")
+    max_loss = option_max_loss(a.structure, a.price, a.contracts, a.width) if not fails else 0.0
+    if max_loss > cap:
+        fails.append(f"max loss ${max_loss:.2f} > option cap ${cap:.2f}")
+    if a.buying_power is not None and max_loss > a.buying_power:
+        fails.append(f"max loss ${max_loss:.2f} > buying power ${a.buying_power:.2f}")
+    if a.structure == "put_credit_spread":
+        if sym not in ("SPY", "QQQ"):
+            fails.append("put credit spreads are SPY/QQQ only")
+    elif a.stop >= a.underlying or a.target <= a.underlying:
+        fails.append("underlying stop must be below and target above the underlying price")
+    if not a.thesis or len(a.thesis) < 10:
+        fails.append("write a one-line thesis (why this, why now)")
+    if fails:
+        raise SystemExit("REFUSED: " + "; ".join(fails))
+    p = {"id": uuid.uuid4().hex[:8], "kind": "option", "symbol": sym, "structure": a.structure,
+         "strategy": a.strategy, "tier": a.tier, "tag": "forced" if a.forced else "organic",
+         "entry": a.price, "qty": a.contracts, "width": a.width, "expiry": a.expiry, "legs": json.loads(a.legs),
+         "max_loss": max_loss, "cost": max_loss, "underlying_entry": a.underlying, "stop": a.stop,
+         "initial_stop": a.stop, "target": a.target, "horizon_days": a.horizon, "thesis": a.thesis,
+         "order_id": a.order_id, "opened_at": now().isoformat(), "opened_day": today_et(),
+         "mark": a.price, "marked_day": today_et(), "day_open_mark": a.price}
+    led["positions"].append(p)
+    return p
+
+
 def close_position(led, a):
     sym = a.symbol.upper()
     p = next((p for p in led["positions"] if p["symbol"] == sym), None)
@@ -314,13 +434,19 @@ def close_position(led, a):
     for name, v, hi in (("setup", a.setup, 40), ("execution", a.execution, 35), ("outcome", a.outcome, 25)):
         if not 0 <= v <= hi:
             raise SystemExit(f"{name} score must be 0-{hi}")
-    risk = p["entry"] - p.get("initial_stop", p["stop"])
-    pnl = round((a.exit - p["entry"]) * p["qty"], 2)
     day = today_et()
-    base = p["entry"] if p["opened_day"] == day or not p.get("prev_close") else p["prev_close"]
+    if p.get("kind") == "option":  # --exit is the per-share option value (credit spreads: cost to close)
+        pnl = option_pnl(p, a.exit)
+        pnl_today = pnl - option_pnl(p, p.get("day_open_mark", p["entry"])) if p["opened_day"] != day else pnl
+        r = round(pnl / p["max_loss"], 2) if p["max_loss"] else 0.0
+    else:
+        risk = p["entry"] - p.get("initial_stop", p["stop"])
+        pnl = round((a.exit - p["entry"]) * p["qty"], 2)
+        base = p["entry"] if p["opened_day"] == day or not p.get("prev_close") else p["prev_close"]
+        pnl_today = round((a.exit - base) * p["qty"], 2)
+        r = round((a.exit - p["entry"]) / risk, 2) if risk > 0 else 0.0
     t = {**p, "exit": a.exit, "reason": a.reason, "closed_at": now().isoformat(), "closed_day": day,
-         "pnl": pnl, "pnl_today": round((a.exit - base) * p["qty"], 2),
-         "r": round((a.exit - p["entry"]) / risk, 2) if risk > 0 else 0.0,
+         "pnl": pnl, "pnl_today": round(pnl_today, 2), "r": r,
          "score": {"setup": a.setup, "execution": a.execution, "outcome": a.outcome,
                    "total": a.setup + a.execution + a.outcome},
          "note": a.note, "exit_order_id": a.order_id}
@@ -511,13 +637,17 @@ tip.style.left=Math.min(x(i)+12,W-150)+"px";tip.style.top="8px"});
 svg.addEventListener("mouseleave",()=>{tip.style.display="none";$("xh").setAttribute("visibility","hidden");$("xd").setAttribute("visibility","hidden")})}
 drawEquity();let rt;addEventListener("resize",()=>{clearTimeout(rt);rt=setTimeout(drawEquity,150)});
 // positions
-$("positions").innerHTML=D.positions.length?D.positions.map(p=>{const px=p.mark??p.entry,u=(px-p.entry)*p.qty;
-const span=p.target-p.stop,at=Math.max(0,Math.min(1,(px-p.stop)/span)),en=(p.entry-p.stop)/span;
+$("positions").innerHTML=D.positions.length?D.positions.map(p=>{const opt=p.kind==="option";
+const px=opt?(p.underlying_mark??p.underlying_entry):(p.mark??p.entry);
+const u=opt?(p.structure==="put_credit_spread"?-1:1)*((p.mark??p.entry)-p.entry)*100*p.qty:(px-p.entry)*p.qty;
+const sz=opt?`${p.qty} × ${esc(p.structure.replace(/_/g," "))} exp ${esc(p.expiry)} · ${p.structure==="put_credit_spread"?"credit":"debit"} ${usd(p.entry)} · max loss ${usd(p.max_loss)}`:`${(+p.qty).toFixed(4)} sh`;
+const cl=v=>Math.max(0,Math.min(1,v)),cs=opt&&p.structure==="put_credit_spread";
+const span=cs?(p.underlying_entry-p.stop)*2:p.target-p.stop,at=cl((px-p.stop)/span),en=cl(((opt?p.underlying_entry:p.entry)-p.stop)/span);
 return `<div class="pos"><div class="row"><span><span class="sym">${esc(p.symbol)}</span> <span class="tag">${esc(p.strategy)} · ${esc(p.tier)}</span></span>
 <span class="${sign(u)}">${usd(u)}</span></div>
-<div class="row meta"><span>entry ${usd(p.entry)} · now ${usd(px)} · ${(+p.qty).toFixed(4)} sh</span><span>opened ${esc(p.opened_day)} · horizon ${p.horizon_days}d</span></div>
+<div class="row meta"><span>${opt?`underlying ${usd(px)} · ${sz}`:`entry ${usd(p.entry)} · now ${usd(px)} · ${sz}`}</span><span>opened ${esc(p.opened_day)} · horizon ${p.horizon_days}d</span></div>
 <div class="bar" title="stop ${usd(p.stop)} → target ${usd(p.target)}"><b style="left:0;width:${en*100}%;background:#3a2222"></b><b style="left:${en*100}%;width:${(1-en)*100}%;background:#1f3324"></b><i style="left:calc(${at*100}% - 1px)"></i></div>
-<div class="row meta"><span>stop ${usd(p.stop)} (${usd((px-p.stop)*p.qty)} away)</span><span>target ${usd(p.target)} (${usd((p.target-px)*p.qty)} away)</span></div>
+<div class="row meta"><span>${cs?"short strike":"stop"} ${usd(p.stop)} (${opt?pct((p.stop/px-1)*100):usd((px-p.stop)*p.qty)+" away"})</span><span>${cs?"take profit at 50% of credit":`target ${usd(p.target)} (${opt?pct((p.target/px-1)*100):usd((p.target-px)*p.qty)+" away"})`}</span></div>
 <div class="meta" style="margin-top:6px">${esc(p.thesis)}</div></div>`}).join(""):`<p class="empty">No open positions.</p>`;
 // regime
 const R=D.regime||{};$("regime").innerHTML=(R.chips&&R.chips.length?`<div class="chips">${R.chips.map(c=>`<span class="chip"><span class="${sign(c.chg)}">${c.chg>0?"▲":c.chg<0?"▼":"■"}</span> ${esc(c.label)} ${pct(c.chg)}</span>`).join("")}</div>`:"")+
@@ -543,6 +673,19 @@ def main(argv=None):
     s.add_argument("--qty", type=float, required=True); s.add_argument("--stop", type=float, required=True)
     s.add_argument("--target", type=float, required=True); s.add_argument("--horizon", type=int, required=True)
     s.add_argument("--thesis", required=True); s.add_argument("--order-id"); s.add_argument("--forced", action="store_true")
+    s = sub.add_parser("open-option")
+    s.add_argument("symbol"); s.add_argument("--structure", required=True, choices=STRUCTURES)
+    s.add_argument("--strategy", required=True, choices=["mean_reversion", "momentum", "premium"])
+    s.add_argument("--tier", required=True); s.add_argument("--contracts", type=int, required=True)
+    s.add_argument("--price", type=float, required=True, help="per-share debit paid, or credit received")
+    s.add_argument("--width", type=float); s.add_argument("--expiry", required=True)
+    s.add_argument("--legs", required=True, help='JSON list of {option_id, strike, type, side}')
+    s.add_argument("--underlying", type=float, required=True); s.add_argument("--stop", type=float, required=True,
+                   help="underlying stop (credit spreads: the short strike)")
+    s.add_argument("--target", type=float, required=True); s.add_argument("--horizon", type=int, required=True)
+    s.add_argument("--buying-power", type=float); s.add_argument("--thesis", required=True)
+    s.add_argument("--order-id"); s.add_argument("--forced", action="store_true")
+    s = sub.add_parser("optmark"); s.add_argument("symbol"); s.add_argument("value", type=float)
     s = sub.add_parser("close")
     s.add_argument("symbol"); s.add_argument("--exit", type=float, required=True); s.add_argument("--reason", required=True)
     s.add_argument("--setup", type=int, required=True); s.add_argument("--execution", type=int, required=True)
@@ -571,6 +714,10 @@ def main(argv=None):
         out = {"symbol": a.symbol.upper(), "blockers": gate(led, a.symbol.upper()), "size": size(led)}
     elif a.cmd == "open":
         out = open_position(led, a); save(led)
+    elif a.cmd == "open-option":
+        out = open_option(led, a); save(led)
+    elif a.cmd == "optmark":
+        out = mark_option(led, a.symbol.upper(), a.value); save(led)
     elif a.cmd == "close":
         out = close_position(led, a); save(led)
     elif a.cmd == "skip":
