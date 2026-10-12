@@ -60,3 +60,12 @@ Entry template:
 - Momentum scan: META FAIL gate 3 (no retest). NKE standout (+1.2%, +1.7 vs XLY) FAIL gates 2/3 (bounce after the Oct 2 earnings gap-down, 3-month downtrend). CRM, AAPL, MSFT not standouts.
 - Decisions: no new trade; hold AMD.
 - Day: P&L +$0.08 of −$5.00 limit · entries 1/3 · open 1/2 · day trades (5 sessions) 0
+
+## 2026-10-12 13:47 ET
+- Stop check: AMD $590.01, +$0.05, cushion 1.4R above the breakeven stop $587.22: HOLD. AMD −3.0% vs SMH −2.0% (lag 1.0 pt, unchanged since entry).
+- Reconciliation: equity $29.47 · broker vs ledger: match.
+- Market read: no change in character; semis −2.0%, tech −1.3%, energy/comm/staples/financials green, SPY −0.1%.
+- Mean-reversion scan: MU (gate 1 FAIL), ORCL (gate 4 FAIL), AMD held. No entry.
+- Momentum scan: new standout HON +1.9% (+1.7 vs XLI): gate 2 FAIL, no catalyst found; structure is a 2-month downtrend. META gate 3 still FAIL; NKE as at 12:47. No entry.
+- Decisions: none. Hold AMD.
+- Day: P&L +$0.05 of −$5.00 limit · entries 1/3 · open 1/2 · day trades (5 sessions) 0
