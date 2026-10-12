@@ -69,3 +69,13 @@ Entry template:
 - Momentum scan: new standout HON +1.9% (+1.7 vs XLI): gate 2 FAIL, no catalyst found; structure is a 2-month downtrend. META gate 3 still FAIL; NKE as at 12:47. No entry.
 - Decisions: none. Hold AMD.
 - Day: P&L +$0.05 of −$5.00 limit · entries 1/3 · open 1/2 · day trades (5 sessions) 0
+
+## 2026-10-12 14:47 ET
+- Stop check: AMD $591.31, +$0.07, cushion 2.1R above the breakeven stop: HOLD.
+- Reconciliation: equity $29.49 · broker vs ledger: match. New sizing in effect (aggressive, user 2026-10-12): stock entry $14, option max loss $14.74, daily loss limit $7.36.
+- Market read: unchanged rotation, semis −2.1%, tech −1.4%, defensives/energy/comm/financials green, SPY −0.2%.
+- Mean-reversion scan: MU (gate 1 FAIL), ORCL −3.1% (gate 4 FAIL, unchanged), AMD held. The any-reasonable tier doesn't apply (AMD already traded today).
+- Momentum scan: META (gate 3 FAIL), NKE (gates 2/3 FAIL), CRM/AAPL/MSFT not standouts. No entry.
+- Options scan (first cycle with options): no stock signal passed, so no debit spread or call to consider. SPY/QQQ put credit spreads need ~$85 max loss vs the $14.74 option cap and $19.42 buying power; not possible at this account size. Skipped without quoting chains.
+- Decisions: none. Hold AMD.
+- Day: P&L +$0.07 of −$7.36 limit · entries 1/3 · open 1/2 · day trades (5 sessions) 0
