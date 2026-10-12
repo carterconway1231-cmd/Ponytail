@@ -107,7 +107,7 @@ entries use `review_option_order` / `place_option_order` (limit, fresh `ref_id`)
   because the universe is restricted to large, liquid, tight-spread names. If a name's quoted
   spread is wider than 0.10% of price at entry time, skip it. If a whole share fits within the size,
   use a whole-share limit order at the ask instead.
-- `review_equity_order` (account 955800222, side buy, type market, dollar_amount "10.00",
+- `review_equity_order` (account 955800222, side buy, type market, dollar_amount = `size` from `$B gate`,
   market_hours regular_hours) → read every alert (buying power, PDT, halt). Any alert = no trade.
 - `place_equity_order` with the same fields and a fresh UUID `ref_id`. Then `get_equity_orders`
   for the fill: actual average price and quantity.
@@ -128,11 +128,11 @@ anomaly halted the cycle, or an order was blocked. Otherwise stay quiet.
 | Parameter | Value |
 |---|---|
 | Account | Robinhood Agentic, 955800222 (••0222). Starting equity $29.42 (+$30 deposit pending) |
-| Position size | **$10.00 fixed** per stock entry, every entry, every strategy |
-| Option max loss | **$100** per option trade (debit paid, or width − credit), and never more than buying power. See `strategies/options.md` |
+| Position size | **50% of account value** per stock entry (whole dollars, min $1), from `$B gate` (`size`). Chosen "Aggressive" by the user 2026-10-12; was $10 fixed |
+| Option max loss | **50% of account value, capped at $100** per option trade (debit paid, or width − credit), and never more than buying power. `$B gate` → `option_max_loss`. See `strategies/options.md` |
 | Max concurrent positions | **2**, shared across all strategies |
-| Daily loss limit | **$5.00** (realized + today's unrealized). Hit it → no new entries today; manage exits only |
-| Circuit breaker | **20% drawdown from peak equity** → size halves to $5 and new entries pause until the user reviews and resets it |
+| Daily loss limit | **25% of the day's starting account value** (realized + today's unrealized). Hit it → no new entries today; manage exits only |
+| Circuit breaker | **20% drawdown from peak equity** → sizes halve and new entries pause until the user reviews and resets it |
 | Max entries per day | 3 |
 | Minimum trades per day | none: trades are taken only when a setup qualifies |
 | Leverage / shorting | **none**. Cash only, even though the account has margin |

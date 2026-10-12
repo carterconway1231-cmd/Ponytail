@@ -1,7 +1,8 @@
-# Strategy: options (defined risk, $100 max loss per trade)
+# Strategy: options (defined risk, max loss 50% of account value, capped at $100)
 
 Added 2026-10-12 at the user's request: debit spreads, single calls and SPY/QQQ put credit
-spreads, each capped at **$100 maximum loss**. Every structure is long-biased and defined-risk.
+spreads. Max loss per trade is **50% of account value, capped at $100** (`$B gate` → `option_max_loss`),
+updated from the fixed $100 on 2026-10-12. Every structure is long-biased and defined-risk.
 Options share the 2-position cap, the daily loss limit, the entry count and the circuit breaker
 with the stock strategies. One position per underlying, stock or option, never both.
 
@@ -69,8 +70,8 @@ for a debit spread, short-leg mark minus long-leg mark (the cost to close) for a
 
 ## Interaction with the account limits (read before trading)
 
-- The $5 daily loss limit and 20% drawdown breaker were set for $10 stock trades. One option stop
-  can lose $20–100, which trips both at once: the day stops and new entries pause until the user
-  reviews. That is the intended behavior of those limits; it is not a reason to skip them.
+- The daily loss limit is 25% of the day's starting value and the breaker trips at 20% drawdown. An
+  option stop at 50% of a max-size debit costs ~25% of the account, enough to trip both at once.
+  That is the intended behavior of those limits; it is not a reason to skip them.
 - At today's ~$30–60 account, a single $100-risk trade is impossible (buying power) and even a
   $40 trade is most of the account. Expect options to fire rarely until the account grows.

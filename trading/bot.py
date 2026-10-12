@@ -43,13 +43,17 @@ DASHBOARD = os.environ.get("TRADING_DASHBOARD", os.path.join(HERE, "dashboard.ht
 CONFIG = {
     "account": "955800222",
     "account_label": "Agentic ••0222",
-    "position_size": 10.0,       # fixed dollars per entry
+    "position_size": 10.0,       # fallback stock size before any equity is recorded
     "max_positions": 2,          # shared across all strategies
-    "daily_loss_limit": 5.0,     # dollars, realized + today's unrealized
+    "daily_loss_limit": 5.0,     # fallback dollars before any equity is recorded
     "breaker_drawdown": 0.20,    # from peak equity: halve size, pause entries until reviewed
     "max_trades_per_day": 3,     # entries; also keeps day trades under the PDT count
     "min_trades_per_day": 0,
-    "option_max_risk": 100.0,    # max loss per option trade (debit paid, or width - credit for credit spreads)
+    "option_max_risk": 100.0,    # hard cap on max loss per option trade (debit, or width - credit)
+    # "Aggressive" scaling chosen by the user on 2026-10-12: sizes follow account value
+    "stock_size_frac": 0.50,     # stock entry = 50% of account value (floored to whole dollars, min $1)
+    "option_risk_frac": 0.50,    # option max loss = 50% of account value, never above option_max_risk
+    "daily_loss_frac": 0.25,     # daily loss limit = 25% of the day's starting account value
 }
 
 # option structures: all defined-risk, all bullish (the framework has no bearish strategy)
@@ -358,16 +362,40 @@ def gate(led, symbol):
         fails.append(f"all {cfg['max_positions']} position slots in use")
     if any(p["symbol"] == symbol for p in led["positions"]):
         fails.append(f"already holding {symbol}: no adding / averaging down")
-    if daily_pnl(led) <= -cfg["daily_loss_limit"]:
-        fails.append(f"daily loss limit ${cfg['daily_loss_limit']:.2f} reached")
+    limit = daily_loss_limit(led)
+    if daily_pnl(led) <= -limit:
+        fails.append(f"daily loss limit ${limit:.2f} reached")
     if entries_today(led) >= cfg["max_trades_per_day"]:
         fails.append(f"max {cfg['max_trades_per_day']} entries per day reached")
     return fails
 
 
+def equity_now(led):
+    return led["equity"][-1]["value"] if led["equity"] else None
+
+
+def day_start_equity(led):
+    day = today_et()
+    todays = [e["value"] for e in led["equity"] if today_et(datetime.fromisoformat(e["ts"])) == day]
+    return todays[0] if todays else equity_now(led)
+
+
 def size(led):
-    s = led["config"]["position_size"]
+    """Stock entry size: a fraction of account value, halved while the breaker is tripped."""
+    cfg, eq = led["config"], equity_now(led)
+    s = max(1.0, float(int(eq * cfg["stock_size_frac"]))) if eq else cfg["position_size"]
     return s / 2 if led["breaker"].get("tripped") else s
+
+
+def option_cap(led):
+    cfg, eq = led["config"], equity_now(led)
+    cap = min(cfg["option_max_risk"], round(eq * cfg["option_risk_frac"], 2)) if eq else cfg["option_max_risk"]
+    return round(cap / 2, 2) if led["breaker"].get("tripped") else cap
+
+
+def daily_loss_limit(led):
+    cfg, eq = led["config"], day_start_equity(led)
+    return round(eq * cfg["daily_loss_frac"], 2) if eq else cfg["daily_loss_limit"]
 
 
 def open_position(led, a):
@@ -394,7 +422,7 @@ def open_position(led, a):
 def open_option(led, a):
     sym = a.symbol.upper()
     fails = gate(led, sym)
-    cap = led["config"]["option_max_risk"]
+    cap = option_cap(led)
     if a.structure != "long_call" and not a.width:
         fails.append("spreads need --width")
     if a.structure == "call_debit_spread" and a.width and a.price >= a.width:
@@ -518,9 +546,9 @@ def status(led):
     eq = led["equity"][-1]["value"] if led["equity"] else None
     return {"account": cfg["account_label"], "equity": eq, "peak": led["peak"],
             "drawdown": round(1 - eq / led["peak"], 4) if eq and led["peak"] else None,
-            "breaker": led["breaker"], "position_size_now": size(led),
+            "breaker": led["breaker"], "position_size_now": size(led), "option_max_loss_now": option_cap(led),
             "open_positions": f"{len(led['positions'])}/{cfg['max_positions']}",
-            "daily_pnl": daily_pnl(led), "daily_loss_limit": cfg["daily_loss_limit"],
+            "daily_pnl": daily_pnl(led), "daily_loss_limit": daily_loss_limit(led),
             "entries_today": f"{entries_today(led)}/{cfg['max_trades_per_day']}",
             "day_trades_last_5_sessions": day_trades_5d(led),
             "entry_blockers": gate(led, "__none__"), "metrics": metrics(led)}
@@ -711,7 +739,8 @@ def main(argv=None):
         out = {"positions": check(led, quotes_from(a.files)), "daily_pnl": daily_pnl(led)}
         save(led)
     elif a.cmd == "gate":
-        out = {"symbol": a.symbol.upper(), "blockers": gate(led, a.symbol.upper()), "size": size(led)}
+        out = {"symbol": a.symbol.upper(), "blockers": gate(led, a.symbol.upper()), "size": size(led),
+               "option_max_loss": option_cap(led), "daily_loss_limit": daily_loss_limit(led)}
     elif a.cmd == "open":
         out = open_position(led, a); save(led)
     elif a.cmd == "open-option":

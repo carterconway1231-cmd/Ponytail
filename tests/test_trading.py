@@ -118,7 +118,8 @@ def test_drawdown_breaker_halves_size_and_pauses_entries(ledger, capsys):
     out = run("equity", "39.9", capsys=capsys)
     assert out["breaker"]["tripped"] and out["drawdown"] == 0.202
     g = run("gate", "AAPL", capsys=capsys)
-    assert g["size"] == 5.0 and any("circuit breaker" in b for b in g["blockers"])
+    # aggressive scaling: 50% of $39.90 -> $19, halved by the breaker; option cap 50% -> $19.95 halved
+    assert g["size"] == 9.5 and g["option_max_loss"] == 9.97 and any("circuit breaker" in b for b in g["blockers"])
 
 
 def test_render_escapes_and_embeds_ledger(ledger, capsys):
@@ -189,3 +190,19 @@ def test_option_cap_refuses_oversized_trades(ledger, capsys):
     args[args.index("0.40")] = "1.55"
     with pytest.raises(SystemExit, match=r"max loss \$155.00 > option cap \$100.00"):
         bot.main(["open-option", "NKE", *args])
+
+
+def test_sizes_scale_with_account_value(ledger, capsys):
+    g = run("gate", "AAPL", capsys=capsys)
+    assert (g["size"], g["option_max_loss"], g["daily_loss_limit"]) == (10.0, 100.0, 5.0)  # no equity yet
+    run("equity", "59.42", capsys=capsys)
+    g = run("gate", "AAPL", capsys=capsys)
+    assert (g["size"], g["option_max_loss"], g["daily_loss_limit"]) == (29.0, 29.71, 14.86)
+    run("equity", "400", capsys=capsys)  # later in the same day: daily limit stays on the day's start
+    g = run("gate", "AAPL", capsys=capsys)
+    assert (g["size"], g["option_max_loss"], g["daily_loss_limit"]) == (200.0, 100.0, 14.86)
+    with pytest.raises(SystemExit, match=r"option cap \$100.00"):
+        bot.main(["open-option", "SPY", "--structure", "call_debit_spread", "--strategy", "momentum",
+                  "--tier", "t", "--contracts", "3", "--price", "0.40", "--width", "1", "--expiry", "2099-01-15",
+                  "--legs", "[]", "--underlying", "700", "--stop", "690", "--target", "710", "--horizon", "5",
+                  "--thesis", "scaled cap check"])
