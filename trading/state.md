@@ -41,3 +41,12 @@ Entry template:
 - Momentum scan: 4 shortlisted. CRM FAIL gate 3 (3/3 weekly downtrend). META FAIL gate 3 (gap day, sma10 falling, no held base). AAPL and MSFT FAIL gate 1 (neither stands out from the other in XLK).
 - Decisions: BUY AMD $10 market, filled 0.017029 sh @ $587.2245 (order 6accf3af). Thesis: sector-flow dislocation in a non-memory chip name. Stop $585.24 (day low $587.00 −0.3%); target $608.10 (prior close, 9.4R); horizon 3 sessions. Caveat logged: entry is at the session low with a stop 0.34% away, so noise can stop it out; a stop exit is expected to cost about $0.03.
 - Day: P&L $0.00 of −$5.00 limit · entries 1/3 · open 1/2 · day trades (5 sessions) 0
+
+## 2026-10-12 11:47 ET
+- Stop check: AMD $591.20 vs entry $587.22, +$0.07, 3.0R cushion; flagged TRIM at 2R. Chose the "tighten" option instead: stop raised from $585.24 to breakeven $587.22. Trimming half of a $10 position would bank ~$0.03 and use a day trade (PDT count), for no risk benefit over a breakeven stop. RS vs SMH: AMD −2.8% vs SMH −1.8%, lag narrowed from the open; thesis intact.
+- Reconciliation: equity $29.48 (cash $19.42 + AMD $10.06), $30 deposit pending · broker vs ledger: match (AMD 0.017029 sh).
+- Market read (tape first): semis bouncing off lows (SMH −2.0% → −1.8%), tech −1.2%; comm +1.1%, energy +1.3%, financials +0.7% still lead; SPY flat. Same rotation as 10:47.
+- Mean-reversion scan: MU −3.05% (gate 1 still FAIL, memory-specific news), AMD held, ORCL −2.4% (not clean-tier depth before 12:30). No new entry.
+- Momentum scan: META only standout, gate 3 FAIL (no retest yet); CRM, MSFT, AAPL not standouts. No new entry.
+- Decisions: hold AMD with breakeven stop; no new trade.
+- Day: P&L +$0.07 of −$5.00 limit · entries 1/3 · open 1/2 · day trades (5 sessions) 0
