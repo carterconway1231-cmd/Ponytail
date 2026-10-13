@@ -32,6 +32,15 @@ def bs_delta(spot, strike, years, vol, kind, r=RISK_FREE):
     return _ncdf(d1) if kind == "call" else _ncdf(d1) - 1
 
 
+def bs_gamma(spot, strike, years, vol, r=RISK_FREE):
+    """Delta change per $1 move in the underlying (same for calls and puts)."""
+    if years <= 0 or vol <= 0 or spot <= 0 or strike <= 0:
+        return 0.0
+    sd = vol * math.sqrt(years)
+    d1 = (math.log(spot / strike) + (r + vol * vol / 2) * years) / sd
+    return math.exp(-d1 * d1 / 2) / math.sqrt(2 * math.pi) / (spot * sd)
+
+
 def theta_per_day(spot, strike, years, vol, kind):
     """Value lost per calendar day if nothing else changes."""
     return bs_price(spot, strike, years, vol, kind) - bs_price(spot, strike, max(0.0, years - 1 / 365), vol, kind)

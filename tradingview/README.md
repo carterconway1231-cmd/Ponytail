@@ -6,6 +6,7 @@ A Pine Script v6 indicator built from scratch around ICT's **Optimal Trade Entry
 |---|---|
 | `ICT_OTE_Indicator.pine` | Signals, drawings, dashboard and alerts. **Paste this into TradingView.** |
 | `ICT_OTE_Strategy.pine` | The same logic with orders, for the Strategy Tester. |
+| `gex.py` | Computes GEX levels (call wall, put wall, gamma flip) from Robinhood option data. |
 | `src/core.pine` | The shared logic. **Edit this file**, then run `python tradingview/build.py`. |
 | `src/indicator.pine`, `src/strategy.pine` | Thin wrappers around the core. |
 
@@ -59,7 +60,9 @@ swing high/low ──► close beyond it = break (MSS if trend flips, BOS if it 
 | VWAP (cyan) + ±1σ / ±2σ bands | Session VWAP that resets each NY day. Outside ±2σ means stretched. |
 | Small red/green dots | First bar of an overbought (above) or oversold (below) run. |
 | Blue / gold / purple background | London killzone / NY AM and PM killzones / Silver Bullet hour. |
-| Dashboard | HTF bias, structure, premium/discount %, OB/OS reading, current session, the pending setup, leg volume, the position, and results. |
+| Orange solid lines / magenta dashed | GEX call and put walls / gamma flip (when GEX levels are pasted in). |
+| Grey diamonds at the bottom, **FIRE** arrows | Volatility squeeze in progress / squeeze released (arrow shows momentum direction). |
+| Dashboard | HTF bias, structure, premium/discount %, OB/OS reading, current session, gamma regime, volatility (squeeze), momentum, the pending setup, leg volume, the position, and results. |
 
 ## Settings worth tuning
 
@@ -91,12 +94,39 @@ All times are New York, and every window can be edited.
 
 `Signal window` restricts signals to the killzones or to the Silver Bullet hours. It's off by default.
 
+## Gamma exposure (GEX)
+
+Dealer gamma levels come from options open interest. TradingView can't load options data, so levels are pasted in.
+
+1. Generate the line from Robinhood data (or just ask Claude: "GEX levels for SPY"):
+   ```
+   python tradingview/gex.py SPY --spot 778.10 instruments*.json quotes*.json
+   ```
+   The inputs are saved `get_option_instruments` / `get_option_quotes` responses. The output looks like:
+   ```
+   SPY cw=790 pw=760 flip=772.40 lv=780,775,770 net=+1.25B d=2026-10-13
+   ```
+2. Paste it into **Settings → Gamma exposure (GEX) → GEX levels**. You can paste one line per symbol; each chart only uses the line for its own symbol. Open interest updates once a day, so refresh the levels each morning.
+
+How to read the levels:
+
+- **Call wall / put wall.** These are the strikes with the most call or put gamma. They often act as a ceiling and a floor, or as magnets near expiration.
+- **γ flip.** Above it, dealers are long gamma: they sell rallies and buy dips, so price tends to pin and mean-revert, which favors OTE fades back into the range. Below it, dealers are short gamma: they chase moves, so ranges expand and trends run.
+- **Net.** Total dealer gamma in $ per 1% move. It assumes customers are long both calls and puts, the usual simplification.
+- **Cap targets at the call/put wall.** Pulls a target back to the wall when the wall sits between entry and target.
+
+## Volatility squeeze and momentum
+
+- **Squeeze.** The Bollinger Bands (20, 2σ) sit inside the Keltner Channel (20, 1.5 ATR), meaning volatility is compressed. A **FIRE** arrow marks the first bar of expansion, pointing in the momentum direction.
+- **Momentum.** The TTM-style linear-regression momentum. **Acceleration** is its bar-to-bar change. "Bull · accelerating" means rising and speeding up; "Bull · fading" means rising but slowing. Bar coloring is optional.
+- **Require momentum turning in signal direction** (off by default). An OTE long then needs momentum ticking up, which is a confirmation that the pullback has stopped.
+
 ## Alerts
 
 Create an alert on the indicator and pick one of these:
 
 - **Any alert() function call**: one alert covering both directions. The message includes entry, stop and target, for example `ICT OTE LONG SPY (5) entry 571.20 stop 570.35 target 573.10`. Use this one for webhooks.
-- **A named condition**: `OTE long`, `OTE short`, `Bullish/Bearish MSS`, `Sell-/Buy-side liquidity swept`, `Overbought`, `Oversold`.
+- **A named condition**: `OTE long`, `OTE short`, `Bullish/Bearish MSS`, `Sell-/Buy-side liquidity swept`, `Overbought`, `Oversold`, `Squeeze fired`, `Crossed above/below gamma flip`, `Touched a GEX wall`.
 
 Set the alert's frequency to **Once per bar close**. Signals are confirmed at bar close.
 

@@ -81,6 +81,21 @@ timeMode = input.string("Off", "Signal window", options = ["Off", "Killzones", "
 showKz   = input.bool(true, "Shade killzones", inline = "sh", group = G_TIME)
 showSb   = input.bool(true, "Shade Silver Bullet", inline = "sh", group = G_TIME)
 
+const string G_GEX = "Gamma exposure (GEX)"
+gexText = input.text_area("", "GEX levels", group = G_GEX, tooltip = "Paste the line printed by tradingview/gex.py, e.g.\nSPY cw=790 pw=760 flip=772.40 lv=780,775 net=+1.25B d=2026-10-13\nOne line per symbol; only the line for the chart's symbol is used.")
+showGex = input.bool(true, "Draw GEX levels", group = G_GEX)
+gexCap  = input.bool(false, "Cap targets at the call / put wall", group = G_GEX, tooltip = "Longs never target past the call wall, shorts never past the put wall (when the wall is between entry and target).")
+gexCol  = input.color(#FF9800, "Walls", inline = "gc", group = G_GEX)
+flipClr = input.color(#E040FB, "Flip", inline = "gc", group = G_GEX)
+
+const string G_SQZ = "Volatility squeeze / momentum"
+sqLen     = input.int(20, "Length", minval = 5, group = G_SQZ)
+bbMult    = input.float(2.0, "Bollinger σ", minval = 0.5, step = 0.1, inline = "sq", group = G_SQZ)
+kcMult    = input.float(1.5, "Keltner ATR", minval = 0.5, step = 0.1, inline = "sq", group = G_SQZ, tooltip = "Squeeze = Bollinger Bands inside the Keltner Channel (volatility compressed). Fired = the first bar they expand back out.")
+showSq    = input.bool(true, "Mark squeeze and fire", group = G_SQZ)
+colorBars = input.bool(false, "Color bars by momentum", group = G_SQZ, tooltip = "Bright = momentum accelerating, faded = momentum slowing.")
+useAccel  = input.bool(false, "Require momentum turning in signal direction", group = G_SQZ, tooltip = "Longs need rising momentum (selling slowing or buying speeding up), shorts falling.")
+
 showPD  = input.bool(true, "Premium / discount shading", group = G_LVL)
 showPDL = input.bool(true, "Previous day high / low", group = G_LVL)
 showPWL = input.bool(true, "Previous week high / low", group = G_LVL)
@@ -204,6 +219,54 @@ inNyPm = f_inSess(kzNyPm)
 inSb   = f_inSess(sbAm) or f_inSess(sbPm)
 inKz   = inLon or inNyAm or inNyPm
 timeOk = timeMode == "Off" or (timeMode == "Killzones" ? inKz : inSb)
+// Volatility squeeze and momentum acceleration
+sqBasis  = ta.sma(close, sqLen)
+bbDev    = bbMult * ta.stdev(close, sqLen)
+kcDev    = kcMult * ta.sma(ta.tr(true), sqLen)
+sqOn     = bbDev < kcDev
+sqFire   = sqOn[1] and not sqOn
+sqAge    = ta.barssince(not sqOn)
+bbExpand = bbDev > bbDev[1]
+mom      = ta.linreg(close - math.avg(math.avg(ta.highest(high, sqLen), ta.lowest(low, sqLen)), sqBasis), sqLen, 0)
+accel    = mom - mom[1]
+
+// GEX levels from the pasted text (parsed once)
+var float gexCw   = na
+var float gexPw   = na
+var float gexFlip = na
+var float gexNet  = na
+var string gexDate = ""
+var array<float> gexLv = array.new<float>()
+if barstate.isfirst and str.length(gexText) > 0
+    for ln in str.split(gexText, "\n")
+        array<string> toks = array.new<string>()
+        for t in str.split(str.replace_all(ln, "\r", ""), " ")
+            if str.length(t) > 0
+                toks.push(t)
+        if toks.size() > 1 and str.upper(toks.get(0)) == str.upper(syminfo.ticker)
+            for tok in toks
+                array<string> kv = str.split(tok, "=")
+                if kv.size() == 2
+                    string k = str.lower(kv.get(0))
+                    string v = kv.get(1)
+                    if k == "cw"
+                        gexCw := str.tonumber(v)
+                    else if k == "pw"
+                        gexPw := str.tonumber(v)
+                    else if k == "flip"
+                        gexFlip := str.tonumber(v)
+                    else if k == "net"
+                        gexNet := str.tonumber(str.replace_all(str.replace_all(v, "B", ""), "+", ""))
+                    else if k == "d"
+                        gexDate := v
+                    else if k == "lv"
+                        for x in str.split(v, ",")
+                            float lvV = str.tonumber(x)
+                            if not na(lvV)
+                                gexLv.push(lvV)
+hasGex  = not na(gexCw) or not na(gexPw) or not na(gexFlip)
+gRegime = not na(gexFlip) ? (close >= gexFlip ? 1 : -1) : not na(gexNet) ? (gexNet >= 0 ? 1 : -1) : 0
+
 sessName = (inLon ? "London" : inNyAm ? "NY AM" : inNyPm ? "NY PM" : "Outside KZ") + (inSb ? " · SB" : "")
 
 var float dayOpen = na
@@ -381,7 +444,8 @@ if sDir != 0 and bar_index > sBar
         bool sweepOk = not useSweep or sSweep
         bool conflOk = not useConfl or f_zoneIn(fvgZones, sDir, zLo, zHi) or f_zoneIn(obZones, sDir, zLo, zHi)
         bool obosOk  = obosMode == "Off" or (sDir == 1 ? osRecent : obRecent)
-        if touched and biasOk and volOk and pdOk and sweepOk and conflOk and obosOk and timeOk and posDir == 0 and not exitNow and not eodBar
+        bool accelOk = not useAccel or sDir * accel > 0
+        if touched and biasOk and volOk and pdOk and sweepOk and conflOk and obosOk and accelOk and timeOk and posDir == 0 and not exitNow and not eodBar
             float entry = close
             float stop  = sAnchor - sDir * atr * stopBuf
             float risk  = math.abs(entry - stop)
@@ -390,6 +454,9 @@ if sDir != 0 and bar_index > sBar
                 "-0.27 extension"  => f_lvl(sAnchor, sExt, -0.27)
                 "-0.62 extension"  => f_lvl(sAnchor, sExt, -0.62)
                 => entry + sDir * risk * tpR
+            float wall = sDir == 1 ? gexCw : gexPw
+            if gexCap and not na(wall) and sDir * (wall - entry) > 0 and sDir * (tgt - wall) > 0
+                tgt := wall
             if risk > 0 and sDir * (tgt - entry) > 0
                 longSig   := sDir == 1
                 shortSig  := sDir == -1
@@ -517,6 +584,35 @@ plotshape(showExh and isOs and not isOs[1], "Oversold", shape.circle, location.b
 bgcolor(showKz and inLon ? color.new(#2962FF, 93) : showKz and (inNyAm or inNyPm) ? color.new(oteCol, 94) : na, title = "Killzones")
 bgcolor(showSb and inSb ? color.new(flipCol, 91) : na, title = "Silver Bullet")
 
+// Squeeze / momentum
+plotshape(showSq and sqOn, "Squeeze on", shape.diamond, location.bottom, color.new(lvlCol, 20), size = size.tiny)
+plotshape(showSq and sqFire and mom >= 0, "Squeeze fired up", shape.triangleup, location.bottom, bullCol, size = size.small, text = "FIRE", textcolor = bullCol)
+plotshape(showSq and sqFire and mom < 0, "Squeeze fired down", shape.triangledown, location.bottom, bearCol, size = size.small, text = "FIRE", textcolor = bearCol)
+barcolor(colorBars ? (mom >= 0 ? (accel > 0 ? bullCol : color.new(bullCol, 55)) : (accel < 0 ? bearCol : color.new(bearCol, 55))) : na, title = "Momentum bars")
+
+// GEX levels: drawn from the start of the current day
+var int dayStartBar = na
+if newDay
+    dayStartBar := bar_index
+var array<line>  gexLines = array.new<line>()
+var array<label> gexTags  = array.new<label>()
+f_gexLine(float y, string txt, color c, int w, string st) =>
+    if not na(y)
+        gexLines.push(line.new(nz(dayStartBar, bar_index), y, bar_index + 15, y, color = c, width = w, style = st))
+        gexTags.push(label.new(bar_index + 15, y, txt + " " + str.tostring(y), color = color.new(c, 100), textcolor = c, style = label.style_label_left, size = size.small))
+if barstate.islast and showGex and hasGex
+    for ln in gexLines
+        ln.delete()
+    for lb in gexTags
+        lb.delete()
+    gexLines.clear()
+    gexTags.clear()
+    f_gexLine(gexCw, "Call wall", gexCol, 2, line.style_solid)
+    f_gexLine(gexPw, "Put wall", gexCol, 2, line.style_solid)
+    f_gexLine(gexFlip, "γ flip", flipClr, 2, line.style_dashed)
+    for lvV in gexLv
+        f_gexLine(lvV, "γ", color.new(gexCol, 40), 1, line.style_dotted)
+
 f_tag(array<label> arr, bool show, float y, string txt) =>
     if show and not na(y)
         arr.push(label.new(bar_index + 2, y, txt, color = color.new(lvlCol, 100), textcolor = lvlCol, style = label.style_label_left, size = size.small))
@@ -539,7 +635,7 @@ tblPos = switch tblPosIn
     "Bottom right" => position.bottom_right
     "Top left"     => position.top_left
     => position.bottom_left
-var table dash = table.new(tblPos, 2, 10, bgcolor = color.new(#131722, 10), border_color = color.new(lvlCol, 70), border_width = 1, frame_color = color.new(lvlCol, 50), frame_width = 1)
+var table dash = table.new(tblPos, 2, 13, bgcolor = color.new(#131722, 10), border_color = color.new(lvlCol, 70), border_width = 1, frame_color = color.new(lvlCol, 50), frame_width = 1)
 
 f_cell(int row, string k, string v, color vc) =>
     table.cell(dash, 0, row, k, text_color = color.new(color.white, 30), text_size = size.small, text_halign = text.align_left)
@@ -557,13 +653,19 @@ f_drawTable(string statsKey, string statsVal) =>
         string obosTxt = (isOb ? "Overbought " : isOs ? "Oversold " : "Neutral ") + str.tostring(obosScore) + " · K " + (na(kLine) ? "–" : str.tostring(math.round(kLine)))
         f_cell(4, "OB/OS (" + (obosMode == "Off" ? "Score" : obosMode) + ")", obosTxt, isOb ? bearCol : isOs ? bullCol : lvlCol)
         f_cell(5, "Session", timeframe.isintraday ? sessName : "–", inSb ? flipCol : inKz ? oteCol : lvlCol)
+        string gTxt = not hasGex ? "No GEX data" : (gRegime == 1 ? "Positive · pin / revert" : "Negative · trend / expand") + (gexDate == "" ? "" : " (" + gexDate + ")")
+        f_cell(6, "Gamma", gTxt, gRegime == 1 ? bullCol : gRegime == -1 ? bearCol : lvlCol)
+        string vTxt = sqOn ? "Squeeze · " + str.tostring(sqAge) + " bars" : sqFire ? "Squeeze fired" : bbExpand ? "Expanding" : "Contracting"
+        f_cell(7, "Volatility", vTxt, sqOn ? oteCol : sqFire ? color.white : lvlCol)
+        string mTxt = mom >= 0 ? (accel > 0 ? "Bull · accelerating" : "Bull · fading") : (accel < 0 ? "Bear · accelerating" : "Bear · fading")
+        f_cell(8, "Momentum", na(mom) ? "–" : mTxt, mom >= 0 ? bullCol : bearCol)
         string setupTxt = sDir == 0 ? "None" : (sDir == 1 ? "Long" : "Short") + ", waiting for OTE"
-        f_cell(6, "Setup", setupTxt, sDir == 0 ? lvlCol : oteCol)
+        f_cell(9, "Setup", setupTxt, sDir == 0 ? lvlCol : oteCol)
         string volTxt = sDir == 0 ? "–" : sVol ? "Spike ✓" : "No spike"
-        f_cell(7, "Leg volume", volTxt, sDir == 0 ? lvlCol : sVol ? bullCol : bearCol)
+        f_cell(10, "Leg volume", volTxt, sDir == 0 ? lvlCol : sVol ? bullCol : bearCol)
         string posTxt = posDir == 0 ? "Flat" : (posDir == 1 ? "Long @ " : "Short @ ") + str.tostring(posEntry, format.mintick)
-        f_cell(8, "Position", posTxt, posDir == 1 ? bullCol : posDir == -1 ? bearCol : lvlCol)
-        f_cell(9, statsKey, statsVal, color.white)
+        f_cell(11, "Position", posTxt, posDir == 1 ? bullCol : posDir == -1 ? bearCol : lvlCol)
+        f_cell(12, statsKey, statsVal, color.white)
 
 f_alertMsg() =>
     (longSig ? "ICT OTE LONG " : "ICT OTE SHORT ") + syminfo.ticker + " (" + timeframe.period + ")" + " entry " + str.tostring(sigEntry, format.mintick) + " stop " + str.tostring(sigStop, format.mintick) + " target " + str.tostring(sigTarget, format.mintick)

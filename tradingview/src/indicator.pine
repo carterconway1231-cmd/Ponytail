@@ -38,5 +38,9 @@ alertcondition(sslSweep, "Sell-side liquidity swept", "SSL swept on {{ticker}} (
 alertcondition(bslSweep, "Buy-side liquidity swept", "BSL swept on {{ticker}} ({{interval}})")
 alertcondition(isOb and not isOb[1], "Overbought", "Overbought on {{ticker}} ({{interval}}) at {{close}}")
 alertcondition(isOs and not isOs[1], "Oversold", "Oversold on {{ticker}} ({{interval}}) at {{close}}")
+alertcondition(sqFire, "Squeeze fired", "Squeeze fired on {{ticker}} ({{interval}}) at {{close}}")
+alertcondition(ta.crossover(close, gexFlip), "Crossed above gamma flip", "{{ticker}} crossed above the gamma flip at {{close}}")
+alertcondition(ta.crossunder(close, gexFlip), "Crossed below gamma flip", "{{ticker}} crossed below the gamma flip at {{close}}")
+alertcondition(ta.cross(high, gexCw) or ta.cross(low, gexPw), "Touched a GEX wall", "{{ticker}} touched a GEX wall at {{close}}")
 if longSig or shortSig
     alert(f_alertMsg(), alert.freq_once_per_bar_close)
