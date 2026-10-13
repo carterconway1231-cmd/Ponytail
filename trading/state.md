@@ -104,3 +104,15 @@ Entry template:
 ### 2026-10-13 11:47 ET routine fire
 - Reconcile: no equity or option positions on 955800222; ledger flat. Matches.
 - Scan: the full-universe scan ran at 11:44 ET (entry above) with the same candidates. No gate passes, so no entries.
+
+### 2026-10-13 12:47 ET cycle
+- Reconcile: flat (no equity/option positions). Portfolio $29.43, buying power $29.43, $30 deposit pending.
+- Tape: SPY −0.06%, QQQ −0.38%, IWM −0.45%. Semis recovering (SMH −0.97% from −2.1%). Energy +1.2%, comm +0.9%. Neutral.
+- Mean reversion (looser tier): JNJ −6.87% (rs −5.7), MU −4.63% (rs −3.7), CAT −4.48% (rs −3.6). Still company-specific with no dated external cause → gate 1 FAIL. JNJ also reports Q3 in mid-October (gate 2 FAIL: earnings within horizon).
+- Momentum:
+  - ORCL +3.93% (rs +4.15, standout). Gate 2 FAIL: no positive dated catalyst; news is the 10/8–10/12 pipeline/AI-financing selloff, so this is a bounce off a low.
+  - META +2.51% (rs +1.6, standout). Gate 2 PASS (Muse Wonder AI model launch 10/12 + PT raises; earnings 10/21+, past the 5-day horizon). Gate 3 FAIL: `$B trend` sma10_rising false, higher_low false (support_held true).
+  - UNH +0.53% (standout vs weak XLV). Gate 2 FAIL: no dated catalyst; Q3 earnings due mid-October inside horizon.
+  - CRM +2.05%, AMD +0.98%: not standouts → gate 1 FAIL.
+- Options: no stock signal passed. SPY put credit spread max loss ~$85 > buying power $29.43 → skip.
+- Action: none. 0 of 3 entries used today.
