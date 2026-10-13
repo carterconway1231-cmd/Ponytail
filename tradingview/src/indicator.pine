@@ -36,5 +36,7 @@ alertcondition(brkDir == 1 and isMssNow, "Bullish MSS", "Bullish MSS on {{ticker
 alertcondition(brkDir == -1 and isMssNow, "Bearish MSS", "Bearish MSS on {{ticker}} ({{interval}})")
 alertcondition(sslSweep, "Sell-side liquidity swept", "SSL swept on {{ticker}} ({{interval}})")
 alertcondition(bslSweep, "Buy-side liquidity swept", "BSL swept on {{ticker}} ({{interval}})")
+alertcondition(isOb and not isOb[1], "Overbought", "Overbought on {{ticker}} ({{interval}}) at {{close}}")
+alertcondition(isOs and not isOs[1], "Oversold", "Oversold on {{ticker}} ({{interval}}) at {{close}}")
 if longSig or shortSig
     alert(f_alertMsg(), alert.freq_once_per_bar_close)

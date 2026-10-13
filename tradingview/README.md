@@ -56,7 +56,10 @@ swing high/low ──► close beyond it = break (MSS if trend flips, BOS if it 
 | Premium / Discount shading | Dealing range from the larger swings (`Dealing range swing length`), split at equilibrium. |
 | PDH/PDL, PWH/PWL, Day open, 9:30 open | Key levels. All use completed bars only. |
 | White / red / green lines after a signal | Entry, stop and target. A `±xR` label marks the exit. |
-| Dashboard | HTF bias, structure, premium/discount %, the pending setup, leg volume, the position, and results. |
+| VWAP (cyan) + ±1σ / ±2σ bands | Session VWAP that resets each NY day. Outside ±2σ means stretched. |
+| Small red/green dots | First bar of an overbought (above) or oversold (below) run. |
+| Blue / gold / purple background | London killzone / NY AM and PM killzones / Silver Bullet hour. |
+| Dashboard | HTF bias, structure, premium/discount %, OB/OS reading, current session, the pending setup, leg volume, the position, and results. |
 
 ## Settings worth tuning
 
@@ -67,12 +70,33 @@ swing high/low ──► close beyond it = break (MSS if trend flips, BOS if it 
 - **HTF bias.** The default is the 1h chart vs its 50 EMA. You can switch it to `240` or `D` for a slower bias.
 - **Target.** Choose the leg extreme, the −0.27 or −0.62 extension, or a fixed R multiple.
 
+## Overbought / oversold
+
+- **Stoch RSI.** K is above `OB` (80) or below `OS` (20).
+- **VWAP bands.** Price is beyond the outer band (±2σ by default).
+- **Exhaustion score.** Ranges from −100 to +100: the average of Stoch RSI (scaled to ±1) and distance from VWAP in outer-band units (capped at ±1). It reads overbought at or above `+threshold` (60) and oversold at or below `−threshold`.
+- **Signal filter** (off by default). When set to one of these three sources, a long needs an oversold reading, and a short an overbought one, within the last `N` bars. Pullbacks into the OTE usually are oversold or overbought, so this filter times the entry rather than fighting it.
+
+## Killzones / Silver Bullet
+
+All times are New York, and every window can be edited.
+
+| Window | Default |
+|---|---|
+| London killzone | 02:00–05:00 |
+| NY AM killzone | 09:30–11:00 |
+| NY PM killzone | 13:30–16:00 |
+| Silver Bullet AM | 10:00–11:00 |
+| Silver Bullet PM | 14:00–15:00 |
+
+`Signal window` restricts signals to the killzones or to the Silver Bullet hours. It's off by default.
+
 ## Alerts
 
 Create an alert on the indicator and pick one of these:
 
 - **Any alert() function call**: one alert covering both directions. The message includes entry, stop and target, for example `ICT OTE LONG SPY (5) entry 571.20 stop 570.35 target 573.10`. Use this one for webhooks.
-- **A named condition**: `OTE long`, `OTE short`, `Bullish/Bearish MSS`, `Sell-/Buy-side liquidity swept`.
+- **A named condition**: `OTE long`, `OTE short`, `Bullish/Bearish MSS`, `Sell-/Buy-side liquidity swept`, `Overbought`, `Oversold`.
 
 Set the alert's frequency to **Once per bar close**. Signals are confirmed at bar close.
 

@@ -61,6 +61,31 @@ showOb    = input.bool(true, "Order blocks", inline = "ob", group = G_ZONE)
 maxOb     = input.int(6, "max", minval = 1, maxval = 50, inline = "ob", group = G_ZONE)
 flipZones = input.bool(true, "Broken zones become IFVGs / breakers", group = G_ZONE, tooltip = "When a candle closes through an FVG or OB it flips: a broken bullish zone becomes bearish resistance and vice versa. A flipped zone that breaks again is removed.")
 
+const string G_OBOS = "Overbought / oversold"
+srsiLen  = input.int(14, "Stoch RSI: RSI", minval = 2, inline = "s1", group = G_OBOS)
+stochLen = input.int(14, "Stoch", minval = 2, inline = "s1", group = G_OBOS)
+kSmooth  = input.int(3, "K", minval = 1, inline = "s2", group = G_OBOS)
+dSmooth  = input.int(3, "D", minval = 1, inline = "s2", group = G_OBOS)
+srsiOB   = input.float(80, "OB", minval = 50, maxval = 100, inline = "s3", group = G_OBOS)
+srsiOS   = input.float(20, "OS", minval = 0, maxval = 50, inline = "s3", group = G_OBOS)
+showVwap = input.bool(true, "VWAP bands (σ)", inline = "vw", group = G_OBOS)
+band1    = input.float(1.0, "", minval = 0.1, step = 0.25, inline = "vw", group = G_OBOS)
+band2    = input.float(2.0, "", minval = 0.1, step = 0.25, inline = "vw", group = G_OBOS, tooltip = "Session VWAP (resets each NY day) with inner and outer standard-deviation bands. Beyond the outer band = stretched.")
+scoreThr = input.int(60, "Exhaustion score threshold", minval = 10, maxval = 100, group = G_OBOS, tooltip = "The score blends Stoch RSI and distance from VWAP (in outer-band units) into −100 (oversold) … +100 (overbought).")
+obosMode = input.string("Off", "Signal filter", options = ["Off", "Stoch RSI", "VWAP bands", "Score"], inline = "of", group = G_OBOS)
+obosLb   = input.int(5, "within", minval = 0, inline = "of", group = G_OBOS, tooltip = "Longs need an oversold reading, shorts an overbought one, at some point in the last N bars. The chosen source also drives the exhaustion markers (the score when the filter is off).")
+showExh  = input.bool(true, "Mark exhaustion on bars", group = G_OBOS)
+
+const string G_TIME = "Killzones / Silver Bullet (NY time)"
+kzLon    = input.session("0200-0500", "London", inline = "k1", group = G_TIME)
+kzNyAm   = input.session("0930-1100", "NY AM", inline = "k1", group = G_TIME)
+kzNyPm   = input.session("1330-1600", "NY PM", inline = "k2", group = G_TIME)
+sbAm     = input.session("1000-1100", "SB AM", inline = "k3", group = G_TIME)
+sbPm     = input.session("1400-1500", "SB PM", inline = "k3", group = G_TIME)
+timeMode = input.string("Off", "Signal window", options = ["Off", "Killzones", "Silver Bullet"], group = G_TIME, tooltip = "Off: signals any time. Killzones: London / NY AM / NY PM only. Silver Bullet: the two one-hour windows only.")
+showKz   = input.bool(true, "Shade killzones", inline = "sh", group = G_TIME)
+showSb   = input.bool(true, "Shade Silver Bullet", inline = "sh", group = G_TIME)
+
 showPD  = input.bool(true, "Premium / discount shading", group = G_LVL)
 showPDL = input.bool(true, "Previous day high / low", group = G_LVL)
 showPWL = input.bool(true, "Previous week high / low", group = G_LVL)
@@ -154,6 +179,37 @@ inRth      = not na(time(timeframe.period, "0930-1600", NY))
 rthOpenBar = inRth and (not inRth[1] or newDay)
 closeMin   = hour(time_close, NY) * 60 + minute(time_close, NY)
 eodBar     = eodExit and timeframe.isintraday and closeMin >= 15 * 60 + 55
+
+// Overbought / oversold
+rsiV  = ta.rsi(close, srsiLen)
+kLine = ta.sma(ta.stoch(rsiV, rsiV, rsiV, stochLen), kSmooth)
+dLine = ta.sma(kLine, dSmooth)
+[vwapV, vwUp, vwLo] = ta.vwap(hlc3, newDay, 1.0)
+vwStd = vwUp - vwapV
+vwZ   = vwStd > 0 ? (close - vwapV) / vwStd : 0.0
+stochC    = na(kLine) ? 0.0 : (kLine - 50) / 50
+vwapC     = math.max(-1.0, math.min(1.0, vwZ / band2))
+obosScore = math.round(100 * (stochC + vwapC) / 2)
+isOb = switch obosMode
+    "Stoch RSI"  => kLine >= srsiOB
+    "VWAP bands" => vwZ >= band2
+    => obosScore >= scoreThr
+isOs = switch obosMode
+    "Stoch RSI"  => kLine <= srsiOS
+    "VWAP bands" => vwZ <= -band2
+    => obosScore <= -scoreThr
+obRecent = ta.barssince(isOb) <= obosLb
+osRecent = ta.barssince(isOs) <= obosLb
+
+// Killzones / Silver Bullet
+f_inSess(string sess) => timeframe.isintraday and not na(time(timeframe.period, sess, NY))
+inLon  = f_inSess(kzLon)
+inNyAm = f_inSess(kzNyAm)
+inNyPm = f_inSess(kzNyPm)
+inSb   = f_inSess(sbAm) or f_inSess(sbPm)
+inKz   = inLon or inNyAm or inNyPm
+timeOk = timeMode == "Off" or (timeMode == "Killzones" ? inKz : inSb)
+sessName = (inLon ? "London" : inNyAm ? "NY AM" : inNyPm ? "NY PM" : "Outside KZ") + (inSb ? " · SB" : "")
 
 var float dayOpen = na
 var float rthOpen = na
@@ -329,7 +385,8 @@ if sDir != 0 and bar_index > sBar
         bool pdOk    = not usePD or na(drEq) or (sDir == 1 ? close < drEq : close > drEq)
         bool sweepOk = not useSweep or sSweep
         bool conflOk = not useConfl or f_zoneIn(fvgZones, sDir, zLo, zHi) or f_zoneIn(obZones, sDir, zLo, zHi)
-        if touched and biasOk and volOk and pdOk and sweepOk and conflOk and posDir == 0 and not exitNow and not eodBar
+        bool obosOk  = obosMode == "Off" or (sDir == 1 ? osRecent : obRecent)
+        if touched and biasOk and volOk and pdOk and sweepOk and conflOk and obosOk and timeOk and posDir == 0 and not exitNow and not eodBar
             float entry = close
             float stop  = sAnchor - sDir * atr * stopBuf
             float risk  = math.abs(entry - stop)
@@ -449,6 +506,22 @@ plot(showPWL ? pwlP : na, "PWL", color.new(lvlCol, 0), 2, plot.style_linebr)
 plot(showDO ? doP : na, "Day open", color.new(oteCol, 40), 1, plot.style_linebr)
 plot(showRO ? roP : na, "9:30 open", color.new(#2962FF, 30), 1, plot.style_linebr)
 
+// VWAP and bands (broken at each NY day so sessions don't join up)
+vwP = newDay ? float(na) : vwapV
+plot(showVwap ? vwP : na, "VWAP", color.new(#00BCD4, 0), 2, plot.style_linebr)
+plot(showVwap ? vwP + band1 * vwStd : na, "VWAP +1σ", color.new(lvlCol, 50), 1, plot.style_linebr)
+plot(showVwap ? vwP - band1 * vwStd : na, "VWAP −1σ", color.new(lvlCol, 50), 1, plot.style_linebr)
+plot(showVwap ? vwP + band2 * vwStd : na, "VWAP +2σ", color.new(bearCol, 40), 1, plot.style_linebr)
+plot(showVwap ? vwP - band2 * vwStd : na, "VWAP −2σ", color.new(bullCol, 40), 1, plot.style_linebr)
+
+// Exhaustion: first bar of each overbought / oversold run
+plotshape(showExh and isOb and not isOb[1], "Overbought", shape.circle, location.abovebar, color.new(bearCol, 30), size = size.tiny)
+plotshape(showExh and isOs and not isOs[1], "Oversold", shape.circle, location.belowbar, color.new(bullCol, 30), size = size.tiny)
+
+// Session shading
+bgcolor(showKz and inLon ? color.new(#2962FF, 93) : showKz and (inNyAm or inNyPm) ? color.new(oteCol, 94) : na, title = "Killzones")
+bgcolor(showSb and inSb ? color.new(flipCol, 91) : na, title = "Silver Bullet")
+
 f_tag(array<label> arr, bool show, float y, string txt) =>
     if show and not na(y)
         arr.push(label.new(bar_index + 2, y, txt, color = color.new(lvlCol, 100), textcolor = lvlCol, style = label.style_label_left, size = size.small))
@@ -471,7 +544,7 @@ tblPos = switch tblPosIn
     "Bottom right" => position.bottom_right
     "Top left"     => position.top_left
     => position.bottom_left
-var table dash = table.new(tblPos, 2, 8, bgcolor = color.new(#131722, 10), border_color = color.new(lvlCol, 70), border_width = 1, frame_color = color.new(lvlCol, 50), frame_width = 1)
+var table dash = table.new(tblPos, 2, 10, bgcolor = color.new(#131722, 10), border_color = color.new(lvlCol, 70), border_width = 1, frame_color = color.new(lvlCol, 50), frame_width = 1)
 
 f_cell(int row, string k, string v, color vc) =>
     table.cell(dash, 0, row, k, text_color = color.new(color.white, 30), text_size = size.small, text_halign = text.align_left)
@@ -486,13 +559,16 @@ f_drawTable(string statsKey, string statsVal) =>
         f_cell(2, "Structure", structTxt, trend == 1 ? bullCol : trend == -1 ? bearCol : lvlCol)
         string pdTxt = na(drPct) ? "–" : (drPct > 0.5 ? "Premium " : "Discount ") + str.tostring(math.round(drPct * 100)) + "%"
         f_cell(3, "Dealing range", pdTxt, na(drPct) ? lvlCol : drPct > 0.5 ? bearCol : bullCol)
+        string obosTxt = (isOb ? "Overbought " : isOs ? "Oversold " : "Neutral ") + str.tostring(obosScore) + " · K " + (na(kLine) ? "–" : str.tostring(math.round(kLine)))
+        f_cell(4, "OB/OS (" + (obosMode == "Off" ? "Score" : obosMode) + ")", obosTxt, isOb ? bearCol : isOs ? bullCol : lvlCol)
+        f_cell(5, "Session", timeframe.isintraday ? sessName : "–", inSb ? flipCol : inKz ? oteCol : lvlCol)
         string setupTxt = sDir == 0 ? "None" : (sDir == 1 ? "Long" : "Short") + ", waiting for OTE"
-        f_cell(4, "Setup", setupTxt, sDir == 0 ? lvlCol : oteCol)
+        f_cell(6, "Setup", setupTxt, sDir == 0 ? lvlCol : oteCol)
         string volTxt = sDir == 0 ? "–" : sVol ? "Spike ✓" : "No spike"
-        f_cell(5, "Leg volume", volTxt, sDir == 0 ? lvlCol : sVol ? bullCol : bearCol)
+        f_cell(7, "Leg volume", volTxt, sDir == 0 ? lvlCol : sVol ? bullCol : bearCol)
         string posTxt = posDir == 0 ? "Flat" : (posDir == 1 ? "Long @ " : "Short @ ") + str.tostring(posEntry, format.mintick)
-        f_cell(6, "Position", posTxt, posDir == 1 ? bullCol : posDir == -1 ? bearCol : lvlCol)
-        f_cell(7, statsKey, statsVal, color.white)
+        f_cell(8, "Position", posTxt, posDir == 1 ? bullCol : posDir == -1 ? bearCol : lvlCol)
+        f_cell(9, statsKey, statsVal, color.white)
 
 f_alertMsg() =>
     (longSig ? "ICT OTE LONG " : "ICT OTE SHORT ") + syminfo.ticker + " (" + timeframe.period + ")" + " entry " + str.tostring(sigEntry, format.mintick) + " stop " + str.tostring(sigStop, format.mintick) + " target " + str.tostring(sigTarget, format.mintick)
