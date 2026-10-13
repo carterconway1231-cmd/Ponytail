@@ -6,3 +6,7 @@ pytest
 # legacy equity bot only
 robin_stocks
 ta
+# memesniper
+anthropic>=1.13
+solders>=0.29
+websockets>=13

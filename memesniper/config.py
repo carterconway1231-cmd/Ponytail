@@ -1,0 +1,135 @@
+"""Every knob comes from the environment (MEMESNIPER_* variables, or a .env file).
+
+The risk limits here are enforced in code by RiskManager. Claude proposes a size
+and exits, and the code clamps them, so the model cannot spend past a cap.
+"""
+import os
+from dataclasses import dataclass, fields
+
+SOL_MINT = "So11111111111111111111111111111111111111112"
+LAMPORTS_PER_SOL = 1_000_000_000
+
+
+def _env(name, default):
+    return os.environ.get(f"MEMESNIPER_{name}", default)
+
+
+def _bool(name, default):
+    return str(_env(name, default)).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _float(name, default):
+    return float(_env(name, default))
+
+
+def _int(name, default):
+    return int(_env(name, default))
+
+
+def _list(name, default=""):
+    return [x.strip() for x in str(_env(name, default)).split(",") if x.strip()]
+
+
+@dataclass(frozen=True)
+class Settings:
+    # --- mode -------------------------------------------------------------
+    mode: str = "paper"                 # paper | live
+    state_path: str = "memesniper_state.db"
+    kill_switch_path: str = "MEMESNIPER_STOP"   # touch this file to halt new entries
+
+    # --- endpoints ----------------------------------------------------------
+    rpc_url: str = "https://api.mainnet-beta.solana.com"
+    pumpportal_ws: str = "wss://pumpportal.fun/api/data"
+    jupiter_url: str = "https://lite-api.jup.ag/swap/v1"
+    jupiter_api_key: str = ""
+    dexscreener_url: str = "https://api.dexscreener.com"
+    rugcheck_url: str = "https://api.rugcheck.xyz/v1"
+    sources: tuple = ("pumpportal", "dexscreener")
+    dexscreener_poll_s: float = 15.0
+
+    # --- wallet (live only) -------------------------------------------------
+    private_key: str = ""               # base58 secret key of a BURNER wallet
+    priority_fee_lamports: int = 200_000
+    min_wallet_reserve_sol: float = 0.05   # never spend below this (fees, rent)
+
+    # --- observation window -------------------------------------------------
+    # Watch a fresh pump.fun launch's trades for this long before deciding.
+    observe_seconds: float = 30.0
+    max_concurrent_observations: int = 25
+
+    # --- hard pre-filters (rejected before Claude is asked) ---------------
+    require_mint_revoked: bool = True
+    require_freeze_revoked: bool = True
+    max_top10_holder_pct: float = 35.0  # excludes bonding curve / AMM pool accounts
+    max_creator_holding_pct: float = 10.0
+    max_roundtrip_loss_pct: float = 12.0   # buy then immediate sell, via Jupiter quotes
+    min_liquidity_usd: float = 5_000.0     # migrated/DEX pairs only
+    max_rugcheck_score: int = 5_000        # rugcheck.xyz normalised risk score
+    min_unique_buyers: int = 8          # within the observation window
+    max_dev_sold_pct: float = 50.0      # creator has dumped more than this of their bag
+    blocked_name_words: tuple = ()
+
+    # --- Claude -------------------------------------------------------------
+    model: str = "claude-opus-5-5"
+    effort: str = "low"                 # latency matters: every second costs entry price
+    decision_timeout_s: float = 25.0
+    min_confidence: float = 0.6
+    max_claude_calls_per_hour: int = 60
+    max_claude_usd_per_day: float = 5.0
+    use_fallbacks: bool = True          # server-side refusal fallback
+
+    # --- position sizing and risk caps (SOL) -----------------------------
+    max_sol_per_trade: float = 0.05
+    max_open_positions: int = 3
+    max_total_exposure_sol: float = 0.15
+    max_daily_spend_sol: float = 0.30
+    max_daily_loss_sol: float = 0.15
+    max_entries_per_hour: int = 6
+    creator_cooldown_hours: float = 24.0
+    slippage_bps: int = 1500            # meme coins are thin; 15%
+    paper_extra_slippage_pct: float = 2.0   # haircut on paper fills vs the quote
+
+    # --- exits (defaults; Claude may tighten within these bounds) --------
+    take_profit_pct: float = 100.0      # sell tp_sell_fraction at +100%
+    tp_sell_fraction: float = 0.5
+    stop_loss_pct: float = 30.0
+    trailing_stop_pct: float = 25.0     # from the high, armed once in profit
+    max_hold_minutes: float = 60.0
+    monitor_interval_s: float = 5.0
+
+    @property
+    def live(self):
+        return self.mode == "live"
+
+
+def load_settings(**overrides):
+    """Build Settings from MEMESNIPER_* env vars; keyword overrides win."""
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
+    d = Settings()
+    values = {}
+    for f in fields(Settings):
+        cur = getattr(d, f.name)
+        key = f.name.upper()
+        if isinstance(cur, bool):
+            values[f.name] = _bool(key, cur)
+        elif isinstance(cur, int):
+            values[f.name] = _int(key, cur)
+        elif isinstance(cur, float):
+            values[f.name] = _float(key, cur)
+        elif isinstance(cur, tuple):
+            values[f.name] = tuple(_list(key, ",".join(cur)))
+        else:
+            values[f.name] = str(_env(key, cur))
+    values.update(overrides)
+    s = Settings(**values)
+    if s.mode not in ("paper", "live"):
+        raise SystemExit("MEMESNIPER_MODE must be paper or live")
+    if s.live and not s.private_key:
+        raise SystemExit("live mode needs MEMESNIPER_PRIVATE_KEY (use a burner wallet)")
+    if s.effort not in ("low", "medium", "high", "xhigh", "max"):
+        raise SystemExit("MEMESNIPER_EFFORT must be low|medium|high|xhigh|max")
+    return s
