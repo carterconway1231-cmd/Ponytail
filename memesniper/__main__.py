@@ -17,6 +17,7 @@ def build(settings):
     from .feeds import DexScreenerFeed, PumpPortalHub
     from .jupiter import Jupiter
     from .net import SolanaRpc, make_client
+    from .notify import Notifier
     from .risk import RiskManager
     from .safety import RugCheck
     from .state import State
@@ -30,7 +31,8 @@ def build(settings):
     executor = LiveExecutor(settings, jup, rpc) if settings.live else PaperExecutor(settings, jup)
     sniper = Sniper(settings, state=state, risk=RiskManager(settings, state), rpc=rpc, jupiter=jup,
                     rugcheck=RugCheck(http, settings.rugcheck_url), dexscreener=dex,
-                    agent=EntryAgent(settings), executor=executor, hub=hub, http=http)
+                    agent=EntryAgent(settings), executor=executor, hub=hub, http=http,
+                    notifier=Notifier(settings, http))
     feeds = [f for f in (hub, dex if "dexscreener" in settings.sources else None) if f]
     return sniper, feeds
 
@@ -102,6 +104,39 @@ def cmd_check(args):
     asyncio.run(go())
 
 
+def cmd_test_alert(args):
+    from .net import make_client
+    from .notify import Notifier
+    s = load_settings()
+
+    async def go():
+        n = Notifier(s, make_client())
+        if not n.enabled:
+            sys.exit("no alert channel set: MEMESNIPER_NTFY_TOPIC, MEMESNIPER_TELEGRAM_BOT_TOKEN"
+                     "+MEMESNIPER_TELEGRAM_CHAT_ID, or MEMESNIPER_WEBHOOK_URL")
+        await n.send("memesniper test", f"Alerts are working ({s.mode} mode).", event="test")
+        print("test alert sent")
+    asyncio.run(go())
+
+
+def cmd_wallet(args):
+    """Show which wallet the bot trades from, so you can match it to the FOMO app."""
+    s = load_settings()
+    if not s.private_key:
+        sys.exit("no MEMESNIPER_PRIVATE_KEY set (paper mode needs none)")
+    from solders.keypair import Keypair
+    from .net import SolanaRpc, make_client
+    pubkey = str(Keypair.from_base58_string(s.private_key).pubkey())
+    print(f"address: {pubkey}")
+
+    async def go():
+        try:
+            print(f"balance: {await SolanaRpc(make_client(), s.rpc_url).balance_sol(pubkey):.4f} SOL")
+        except Exception as e:
+            print(f"balance: unavailable ({e})")
+    asyncio.run(go())
+
+
 def cmd_stop(args):
     s = load_settings()
     open(s.kill_switch_path, "w").write(time.ctime())
@@ -130,6 +165,8 @@ def main(argv=None):
     c.add_argument("mint")
     c.add_argument("--ask", action="store_true", help="also ask Claude (costs one API call)")
     c.set_defaults(fn=cmd_check)
+    sub.add_parser("test-alert", help="send a test phone alert").set_defaults(fn=cmd_test_alert)
+    sub.add_parser("wallet", help="show the bot's wallet address and SOL balance").set_defaults(fn=cmd_wallet)
     sub.add_parser("stop", help="kill switch: halt new entries").set_defaults(fn=cmd_stop)
     sub.add_parser("resume", help="clear the kill switch").set_defaults(fn=cmd_resume)
     args = p.parse_args(argv)

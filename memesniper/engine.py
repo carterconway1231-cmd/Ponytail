@@ -7,6 +7,7 @@ import time
 from . import exits
 from .feeds import fetch_metadata
 from .models import Position
+from .notify import dexscreener_link
 from .safety import screen
 
 log = logging.getLogger("memesniper")
@@ -16,11 +17,12 @@ WRITE_OFF_AFTER_FAILURES = 24   # monitor ticks with no sell route before bookin
 
 class Sniper:
     def __init__(self, settings, *, state, risk, rpc, jupiter, rugcheck, dexscreener, agent,
-                 executor, hub=None, http=None):
+                 executor, hub=None, http=None, notifier=None):
         self.s = settings
         self.state, self.risk, self.rpc, self.jup = state, risk, rpc, jupiter
         self.rugcheck, self.dex, self.agent, self.exec = rugcheck, dexscreener, agent, executor
         self.hub, self.http = hub, http
+        self.notifier = notifier
         self._obs_slots = asyncio.Semaphore(settings.max_concurrent_observations)
         self._sell_failures = {}
         self._tasks = set()
@@ -42,7 +44,10 @@ class Sniper:
     async def handle(self, launch):
         if not self.state.mark_seen(launch.mint):
             return None
-        if self.risk.halted():
+        halt = self.risk.halted()
+        if self.notifier:
+            await self.notifier.halted(halt)
+        if halt:
             return None         # don't burn API calls on candidates we can't buy
 
         observation = None
@@ -78,6 +83,9 @@ class Sniper:
         if not approved:
             if decision.action == "BUY":
                 decision.reasoning = f"[blocked: {why}] {decision.reasoning}"
+            elif self.notifier and self.s.alert_on_skips:
+                await self.notifier.send(f"Skipped {launch.symbol or launch.mint[:6]}",
+                                         decision.reasoning, event="skip")
             self.state.record_decision(launch, report, decision)
             return None
 
@@ -95,11 +103,54 @@ class Sniper:
         self.state.record_decision(launch, report, approved, executed=True)
         log.info("BOUGHT %s %.4f SOL (%s) tp+%.0f%% sl-%.0f%% hold %.0fm", pos.symbol, fill.sol,
                  self.exec.mode, pos.take_profit_pct, pos.stop_loss_pct, pos.max_hold_minutes)
+        if self.notifier:
+            await self.notifier.send(
+                f"{'PAPER ' if self.exec.mode == 'paper' else ''}BUY {pos.symbol} {fill.sol:.4f} SOL",
+                f"Claude {approved.confidence:.0%}: {approved.reasoning}\n"
+                f"TP +{pos.take_profit_pct:.0f}% / SL -{pos.stop_loss_pct:.0f}% / {pos.max_hold_minutes:.0f}m\n"
+                f"{dexscreener_link(pos.mint)}",
+                event="buy", data={"mint": pos.mint, "sol": fill.sol, "sig": fill.sig})
         return pos
+
+    async def _alert_exit(self, p, title, reason, sol):
+        if not self.notifier:
+            return
+        pnl = p.realized_sol - p.entry_sol
+        pct = pnl / p.entry_sol * 100 if p.entry_sol else 0
+        await self.notifier.send(
+            f"{'PAPER ' if self.exec.mode == 'paper' else ''}{title} {p.symbol}",
+            f"{reason}\n+{sol:.4f} SOL this sale; position P&L {pnl:+.4f} SOL ({pct:+.0f}%)\n"
+            f"{dexscreener_link(p.mint)}",
+            urgent=title == "WRITE-OFF", event=title.lower(), data={"mint": p.mint, "pnl_sol": pnl})
+
+    async def reconcile(self, p):
+        """Sync with the wallet when tokens left it outside the bot (e.g. sold in the FOMO app).
+
+        Returns True if the position was closed. The SOL you got for the external sale isn't
+        visible to the bot, so it is estimated at the current sell quote.
+        """
+        held = await self.exec.held_tokens(p.mint)
+        if held is None or held >= p.tokens * 0.99:
+            return False
+        missing = p.tokens - held
+        est = await self.jup.value_sol(p.mint, missing, self.s.slippage_bps) or 0.0
+        p.realized_sol += est
+        p.tokens = float(held)
+        reason = "sold outside the bot (FOMO app?); proceeds estimated"
+        if held <= 0:
+            self.state.close_position(p, reason)
+            log.info("CLOSED %s externally: est. +%.4f SOL", p.symbol, est)
+            await self._alert_exit(p, "CLOSED (manual)", reason, est)
+            return True
+        self.state.save_position(p)
+        log.info("%s partly sold outside the bot: est. +%.4f SOL", p.symbol, est)
+        return False
 
     # --- exits ---------------------------------------------------------------
     async def check_position(self, p, now=None):
         now = now or time.time()
+        if await self.reconcile(p):
+            return None
         value = await self.jup.value_sol(p.mint, p.tokens, self.s.slippage_bps)
         price = value / p.tokens if value is not None and p.tokens > 0 else None
         action = exits.evaluate(p, price, now, self.s.tp_sell_fraction)
@@ -115,6 +166,7 @@ class Sniper:
             if n >= WRITE_OFF_AFTER_FAILURES:
                 log.warning("writing off %s after %d failed sells", p.symbol, n)
                 self.state.close_position(p, f"written off: {action.reason}")
+                await self._alert_exit(p, "WRITE-OFF", action.reason, 0.0)
             return None
         self._sell_failures.pop(p.id, None)
         p.tokens = max(p.tokens - fill.tokens, 0.0)
@@ -125,9 +177,11 @@ class Sniper:
             p.tp_taken = True
             self.state.save_position(p)
             log.info("PARTIAL %s %s: +%.4f SOL", p.symbol, action.reason, fill.sol)
+            await self._alert_exit(p, "SOLD HALF", action.reason, fill.sol)
         else:
             self.state.close_position(p, action.reason)
             log.info("CLOSED %s %s: pnl %+.4f SOL", p.symbol, action.reason, p.realized_sol - p.entry_sol)
+            await self._alert_exit(p, "CLOSED", action.reason, fill.sol)
         return action
 
     async def monitor(self):

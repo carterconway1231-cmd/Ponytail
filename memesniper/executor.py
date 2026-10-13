@@ -32,6 +32,9 @@ class PaperExecutor:
     async def wallet_sol(self):
         return None     # paper has no wallet cap; risk caps still apply
 
+    async def held_tokens(self, mint):
+        return None     # paper positions can't be touched outside the bot
+
     async def buy(self, mint, sol):
         q = await self.jup.buy_quote(mint, sol, self.s.slippage_bps)
         if not q:
@@ -59,6 +62,10 @@ class LiveExecutor:
 
     async def wallet_sol(self):
         return await self.rpc.balance_sol(self.pubkey)
+
+    async def held_tokens(self, mint):
+        """On-chain balance. Differs from the bot's books if you sold in the FOMO app."""
+        return await self.rpc.token_balance_raw(self.pubkey, mint)
 
     async def _send(self, quote):
         b64 = await self.jup.swap_tx(quote, self.pubkey, self.s.priority_fee_lamports)

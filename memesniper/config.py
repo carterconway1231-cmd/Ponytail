@@ -97,6 +97,14 @@ class Settings:
     max_hold_minutes: float = 60.0
     monitor_interval_s: float = 5.0
 
+    # --- alerts (all optional) -------------------------------------------
+    ntfy_server: str = "https://ntfy.sh"
+    ntfy_topic: str = ""
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    webhook_url: str = ""
+    alert_on_skips: bool = False        # also alert when Claude passes on a candidate
+
     @property
     def live(self):
         return self.mode == "live"

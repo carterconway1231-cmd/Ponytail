@@ -396,3 +396,83 @@ def test_cli_stop_resume_and_status(settings, monkeypatch, capsys):
     capsys.readouterr()
     main(["status"])
     assert json.loads(capsys.readouterr().out)["halted"] is None
+
+
+# --- alerts and FOMO-wallet sync ---------------------------------------------------
+
+class FakeHttp:
+    def __init__(self):
+        self.posts = []
+
+    async def post(self, url, **kw):
+        self.posts.append((url, kw))
+        return SimpleNamespace(status_code=200)
+
+
+def alert_settings(settings, **kw):
+    base = dict(ntfy_topic="my-secret-topic", telegram_bot_token="T0K", telegram_chat_id="42",
+                webhook_url="https://hooks.example/x")
+    base.update(kw)
+    return Settings(**{**settings.__dict__, **base})
+
+
+def test_notifier_posts_to_every_configured_channel_and_dedupes_halts(settings):
+    from memesniper.notify import Notifier
+    http = FakeHttp()
+    n = Notifier(alert_settings(settings), http)
+    run(n.send("BUY FROG", "body", event="buy", data={"mint": MINT}))
+    urls = [u for u, _ in http.posts]
+    assert urls == ["https://ntfy.sh/my-secret-topic", "https://api.telegram.org/botT0K/sendMessage",
+                    "https://hooks.example/x"]
+    assert http.posts[0][1]["headers"]["Title"] == "BUY FROG"
+    assert http.posts[2][1]["json"]["data"] == {"mint": MINT}
+    http.posts.clear()
+    run(n.halted("daily loss limit hit"))
+    run(n.halted("daily loss limit hit"))
+    run(n.halted(None))
+    assert len(http.posts) == 3                         # one halt alert, across 3 channels
+    assert not Notifier(settings, http).enabled
+
+
+def test_buy_and_exit_send_alerts(settings, state):
+    from memesniper.notify import Notifier
+    http = FakeHttp()
+    s = alert_settings(settings, telegram_bot_token="", webhook_url="")
+    sniper, _, jup = make_sniper(s, state, BUY)
+    sniper.notifier = Notifier(s, http)
+    run(sniper.handle(pump_launch()))
+    jup.price[MINT] = 0.5e-6
+    run(sniper.check_position(state.open_positions()[0]))
+    titles = [kw["headers"]["Title"] for _, kw in http.posts]
+    assert titles == ["PAPER BUY FROG 0.0500 SOL", "PAPER CLOSED FROG"]
+    assert b"stop loss" in http.posts[1][1]["content"]
+
+
+class WalletExecutor(PaperExecutor):
+    """Paper fills, but with an on-chain balance you can change, like a shared FOMO wallet."""
+    mode = "live"
+    held = None
+
+    async def held_tokens(self, mint):
+        return self.held
+
+
+def test_position_sold_in_fomo_app_is_closed_not_double_sold(settings, state):
+    sniper, _, jup = make_sniper(settings, state, BUY)
+    sniper.exec = WalletExecutor(settings, jup)
+    p = run(sniper.handle(pump_launch()))
+    sniper.exec.held = p.tokens                         # untouched: normal monitoring
+    assert run(sniper.check_position(state.open_positions()[0])) is None
+    assert state.open_positions()
+
+    sniper.exec.held = p.tokens / 2                     # you sold half in FOMO
+    run(sniper.check_position(state.open_positions()[0]))
+    left = state.open_positions()[0]
+    assert left.tokens == pytest.approx(p.tokens / 2) and left.realized_sol > 0
+
+    sniper.exec.held = 0                                # then the rest
+    run(sniper.check_position(left))
+    assert state.open_positions() == []
+    closed = state.closed_positions()[0]
+    assert "outside the bot" in closed["exit_reason"]
+    assert closed["realized_sol"] == pytest.approx(p.entry_sol * 0.97, rel=0.01)

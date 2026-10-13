@@ -41,6 +41,8 @@ python -m memesniper status                   # open positions, today's P&L, Cla
 python -m memesniper journal -n 50            # every decision, including rejections and Claude's reasoning
 python -m memesniper check <MINT> --ask       # screen one token and ask Claude, without trading
 python -m memesniper stop | resume            # kill switch for new entries (exits keep running)
+python -m memesniper test-alert               # check phone alerts are wired up
+python -m memesniper wallet                   # which wallet the bot trades from (live)
 ```
 
 State lives in `memesniper_state.db` (SQLite). Every candidate is journaled with its
@@ -56,6 +58,40 @@ metrics, so you can judge the filters and Claude's calls before risking anything
 4. Set `MEMESNIPER_MODE=live` and `MEMESNIPER_PRIVATE_KEY=<base58>` in `.env`, then run
    `python -m memesniper run --live`. Both are required. Live mode prints its caps and
    waits 5s before starting.
+
+## Connecting the FOMO app
+
+FOMO (fomo.family) has no public trading API, so the bot can't plug into the app itself.
+What works is **sharing a wallet**. FOMO wallets are non-custodial, and the app lets you export
+the private key (Face ID required). If the bot trades with that key, its buys and sells are
+ordinary on-chain trades from your FOMO wallet, so the tokens appear in your FOMO holdings.
+
+1. **Use a second FOMO account for the bot**, not your main one. The bot's caps limit what it
+   spends, but a key the bot holds can move *everything* in that wallet. A dedicated account
+   funded with what you're willing to lose keeps your main FOMO balance out of reach.
+2. In that account, export the private key and put it in `.env` as `MEMESNIPER_PRIVATE_KEY`.
+   Run `python -m memesniper wallet` and check the address matches the one FOMO shows.
+3. The bot trades **SOL**. If `wallet` shows little SOL, swap some USDC to SOL in FOMO first.
+   Keep at least `MIN_WALLET_RESERVE_SOL` (0.05) for fees.
+4. You can still trade the bot's coins by hand in FOMO. On every monitor tick the bot compares
+   its books with the wallet. If you sold some or all of a position in the app, it stops
+   managing those tokens instead of trying to sell them again. It records the sale (its
+   proceeds are estimated from the current quote) and alerts you. Coins you buy yourself in
+   FOMO are never touched: the bot only manages positions it opened.
+5. Keep the key only in `.env` on a machine you control. Never commit it or paste it anywhere.
+
+## Phone alerts
+
+The bot alerts on every buy, partial sell, close, write-off, manual (FOMO) close, and when a
+limit pauses it. Set any of these in `.env`, then run `python -m memesniper test-alert`:
+
+| Channel | Setup |
+|---|---|
+| ntfy (easiest) | Install the ntfy app, subscribe to a long random topic name, set `MEMESNIPER_NTFY_TOPIC` to it. Anyone who knows the topic can read it, so make it unguessable. |
+| Telegram | Create a bot with @BotFather and message it once. Set `MEMESNIPER_TELEGRAM_BOT_TOKEN`, plus `MEMESNIPER_TELEGRAM_CHAT_ID` (your chat id, e.g. from @userinfobot). |
+| Webhook | `MEMESNIPER_WEBHOOK_URL` gets a JSON POST `{event, title, message, data}` (Discord, Zapier, your own server). |
+
+`MEMESNIPER_ALERT_ON_SKIPS=true` also alerts when Claude passes on a candidate. That can be noisy.
 
 ## Honest expectations
 
@@ -81,7 +117,8 @@ metrics, so you can judge the filters and Claude's calls before risking anything
 | `risk.py` | Caps and clamps applied after Claude |
 | `exits.py` | Pure exit rules |
 | `executor.py` | Paper and live (Jupiter + solders signing) execution |
-| `engine.py` | Orchestration and position monitor |
+| `engine.py` | Orchestration, position monitor, wallet sync for manual (FOMO app) sells |
+| `notify.py` | Phone alerts: ntfy, Telegram, webhook |
 | `state.py` | SQLite journal |
 
 Tests: `python -m pytest tests/test_memesniper.py`. They run fully offline against fakes.
