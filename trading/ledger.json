@@ -55,27 +55,27 @@
  "regime": {
   "chips": [
    {
-    "chg": -0.06,
+    "chg": -0.1,
     "label": "SPY",
     "name": "SPY"
    },
    {
-    "chg": -0.38,
+    "chg": -0.52,
     "label": "QQQ",
     "name": "QQQ"
    },
    {
-    "chg": -0.45,
+    "chg": -0.52,
     "label": "IWM",
     "name": "IWM"
    },
    {
-    "chg": -0.22,
+    "chg": -0.37,
     "label": "Tech",
     "name": "XLK"
    },
    {
-    "chg": -0.97,
+    "chg": -1.25,
     "label": "Semis",
     "name": "SMH"
    },
@@ -85,52 +85,52 @@
     "name": "XLC"
    },
    {
-    "chg": -0.02,
+    "chg": 0.01,
     "label": "Discretionary",
     "name": "XLY"
    },
    {
-    "chg": -0.08,
+    "chg": -0.27,
     "label": "Financials",
     "name": "XLF"
    },
    {
-    "chg": -1.16,
+    "chg": -1.24,
     "label": "Health",
     "name": "XLV"
    },
    {
-    "chg": 1.18,
+    "chg": 1.4,
     "label": "Energy",
     "name": "XLE"
    },
    {
-    "chg": -0.87,
+    "chg": -0.73,
     "label": "Industrials",
     "name": "XLI"
    },
    {
-    "chg": -0.2,
+    "chg": -0.08,
     "label": "Staples",
     "name": "XLP"
    },
    {
-    "chg": 0.13,
+    "chg": 0.47,
     "label": "Utilities",
     "name": "XLU"
    },
    {
-    "chg": 0.21,
+    "chg": 0.27,
     "label": "Materials",
     "name": "XLB"
    },
    {
-    "chg": -0.33,
+    "chg": -0.08,
     "label": "Real estate",
     "name": "XLRE"
    }
   ],
-  "chips_ts": "2026-10-13T16:48:14.707483+00:00",
+  "chips_ts": "2026-10-13T17:48:06.866455+00:00",
   "read": "Close: semis -2.0%, tech -1.3%, defensives and energy green, SPY -0.1%. One-day rotation out of chips (CXMT memory news).",
   "ts": "2026-10-12 18:27 ET"
  },

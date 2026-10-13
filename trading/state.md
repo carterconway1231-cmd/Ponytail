@@ -116,3 +116,22 @@ Entry template:
   - CRM +2.05%, AMD +0.98%: not standouts → gate 1 FAIL.
 - Options: no stock signal passed. SPY put credit spread max loss ~$85 > buying power $29.43 → skip.
 - Action: none. 0 of 3 entries used today.
+
+### 2026-10-13 13:47 ET cycle
+- Reconcile: flat (no positions). Buying power $29.43.
+- Tape: SPY −0.10%, QQQ −0.52%, IWM −0.52%. SMH −1.25%, XLV −1.24%, XLI −0.73%; XLE +1.4%, XLC +0.9%. Mild risk-off, with healthcare weak after JNJ's Q3 report.
+- Mean reversion (looser tier):
+  - JNJ −6.01%: company-specific (Q3: $5.5B talc charge, MedTech miss) → gate 1 FAIL.
+  - MU −5.28% and CAT −4.54%: company-specific, no external cause → gate 1 FAIL.
+  - ABBV −2.16% (XLV −1.24%, rs −0.92, hint external):
+    - Gate 1 PASS: sector spillover from JNJ's report; no ABBV-specific news.
+    - Gate 2 FAIL: latest report Q2 2026 EPS $3.65 vs $3.77 est (a miss); Q1 also missed by $0.01. Next earnings 10/30 is outside the horizon, but the miss alone fails the gate.
+    - Gate 3 marginal: mean target $284.04 is only ~3% above $275; 24 Buy / 7 Hold / 1 Sell.
+    - Gate 4 PASS: strong uptrend, 259.9 → 281.1 over 8 sessions.
+    - The stock is also still making intraday lows (275.0 at 13:40); no base yet. → SKIP on gate 2.
+- Momentum:
+  - ORCL +4.47% (standout): no positive dated catalyst → gate 2 FAIL.
+  - META +2.70% (standout): catalyst passes, but trend gate 3 fails (sma10 not rising, no higher low) → FAIL.
+  - CRM, AMD, AVGO and NVDA: not standouts → gate 1 FAIL.
+- Options: no stock signal passed. Put credit spread max loss ~$85 > buying power $29.43 → skip.
+- Action: none. 0 of 3 entries used today.
