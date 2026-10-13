@@ -85,3 +85,11 @@ Entry template:
 - The session worker restarted mid-cycle; the sell was not placed before 16:00. Reviewed at 18:27 ET: market closed. A market order now would only queue for tomorrow's open, so it was not sent. **AMD held overnight** (0.017029 sh, closed $594.15, +$0.12), stop $587.22 breakeven, target $608.10, horizon to Oct 15. Thesis intact (AMD caught up to SMH into the close: −2.3% vs −2.0%); no AMD catalyst before the open (earnings Nov 3). Tomorrow's 9:47 cycle re-evaluates exit vs hold.
 - Scans (15:48): no new mean-reversion or momentum candidates beyond the morning's failures; options unaffordable (cap $14.74, BP $19.42). No entry.
 - Day summary: 1 entry (AMD), 0 exits, P&L +$0.12 unrealized, equity $29.53, 0 day trades.
+
+## 2026-10-13 09:47 and 10:47 ET (interrupted)
+- Both cycles were cut off by session worker restarts before acting. At 09:48 AMD was $587.24, 0.01R above the $587.22 breakeven stop (EXIT_NEAR_STOP); the sell had not been sent when the 09:47 cycle died.
+- Other commits on the branch since yesterday (TradingView indicators, a Robinhood permissions setting) came from other sessions and don't touch `trading/`; tests pass.
+
+## 2026-10-13 11:43 ET (stop exit)
+- AMD $587.155 < stop $587.22 → EXIT_STOP. Sold 0.017029 sh market, filled $587.6017 (order 6ace518e). P&L +$0.01, R +0.19 vs initial risk. Score 66/100 (setup 32, execution 22, outcome 12).
+- Not a day trade (bought 10/12). Account flat: no open positions.

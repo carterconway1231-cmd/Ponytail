@@ -44,34 +44,14 @@
   {
    "ts": "2026-10-12T22:27:57.753792+00:00",
    "value": 29.53
+  },
+  {
+   "ts": "2026-10-13T15:43:29.920011+00:00",
+   "value": 29.43
   }
  ],
  "peak": 29.53,
- "positions": [
-  {
-   "cost": 10.0,
-   "entry": 587.2245,
-   "horizon_days": 3,
-   "id": "d3ce6776",
-   "initial_stop": 585.24,
-   "mark": 594.15,
-   "marked_at": "2026-10-12T22:27:57.790417+00:00",
-   "opened_at": "2026-10-12T14:50:47.751101+00:00",
-   "opened_day": "2026-10-12",
-   "order_id": "6accf3af-7296-41c1-a28e-e1fdfbaac3d2",
-   "prev_close": 608.1,
-   "qty": 0.017029,
-   "stop": 587.22,
-   "stop_note": "raised to breakeven at 2R (11:47) instead of trimming half of a $10 position",
-   "strategy": "mean_reversion",
-   "symbol": "AMD",
-   "tag": "organic",
-   "target": 608.1,
-   "thesis": "AMD -3.4% in a semis-wide selloff (SMH -2.0%, CXMT memory news + AI-compute resale worries), no AMD-specific news; Aug beat, earnings Nov 3; above 50-day, target = prior close gap fill",
-   "tier": "clean",
-   "trimmed": true
-  }
- ],
+ "positions": [],
  "regime": {
   "chips": [
    {
@@ -263,5 +243,44 @@
  ],
  "today_unrealized": 0.12,
  "today_unrealized_day": "2026-10-12",
- "trades": []
+ "trades": [
+  {
+   "closed_at": "2026-10-13T15:43:29.816413+00:00",
+   "closed_day": "2026-10-13",
+   "cost": 10.0,
+   "entry": 587.2245,
+   "exit": 587.6017,
+   "exit_order_id": "6ace518e-987c-427d-8d6e-49d63fbae5ff",
+   "horizon_days": 3,
+   "id": "d3ce6776",
+   "initial_stop": 585.24,
+   "mark": 594.15,
+   "marked_at": "2026-10-12T22:27:57.790417+00:00",
+   "note": "Gates passed; reached +3.5R intraday but the planned 15:47 same-day exit was lost to a session restart, then two morning cycles were interrupted before the breakeven stop could fire; scratch +$0.01. Lesson: tight stops at the session low leave no room; restarts cost exits.",
+   "opened_at": "2026-10-12T14:50:47.751101+00:00",
+   "opened_day": "2026-10-12",
+   "order_id": "6accf3af-7296-41c1-a28e-e1fdfbaac3d2",
+   "pnl": 0.01,
+   "pnl_today": -0.35,
+   "prev_close": 608.1,
+   "qty": 0.017029,
+   "r": 0.19,
+   "reason": "breakeven stop (EXIT_STOP at 11:43 ET)",
+   "score": {
+    "execution": 22,
+    "outcome": 12,
+    "setup": 32,
+    "total": 66
+   },
+   "stop": 587.22,
+   "stop_note": "raised to breakeven at 2R (11:47) instead of trimming half of a $10 position",
+   "strategy": "mean_reversion",
+   "symbol": "AMD",
+   "tag": "organic",
+   "target": 608.1,
+   "thesis": "AMD -3.4% in a semis-wide selloff (SMH -2.0%, CXMT memory news + AI-compute resale worries), no AMD-specific news; Aug beat, earnings Nov 3; above 50-day, target = prior close gap fill",
+   "tier": "clean",
+   "trimmed": true
+  }
+ ]
 }
