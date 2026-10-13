@@ -99,4 +99,4 @@ Entry template:
 - Mean reversion (clean tier): JNJ −5.47% (rs −4.5), CAT −5.06% (rs −3.6), MU −5.01% (rs −2.9). All read as company-specific; no dated external cause found in news search → gate 1 FAIL (default) for all three.
 - Momentum: CRM +2.28% (rs +3.2, standout). No dated catalyst found → catalyst gate FAIL. AAPL/MSFT/ORCL are not standouts.
 - Options: no stock signal passed → no debit spread/call. Put credit spread not affordable (buying power ~$19 vs ~$85 max loss).
-- Action: none. Flat, 1 of 3 entries used today (AMD carried, closed at stop).
+- Action: none. Flat, 0 of 3 entries used today (AMD was a 10/12 entry, closed at stop today).
