@@ -1,0 +1,40 @@
+//@version=6
+indicator("ICT OTE Toolkit", "ICT OTE", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500, max_bars_back = 500)
+
+//@@CORE@@
+
+// ─── Signals, trade lines, stats ────────────────────────────────────
+plotshape(longSig, "Long signal", shape.labelup, location.belowbar, bullCol, text = "BUY", textcolor = color.white, size = size.small)
+plotshape(shortSig, "Short signal", shape.labeldown, location.abovebar, bearCol, text = "SELL", textcolor = color.white, size = size.small)
+
+var line eLn = na
+var line sLn = na
+var line tLn = na
+if longSig or shortSig
+    eLn := line.new(bar_index, sigEntry, bar_index + 1, sigEntry, color = color.white, width = 1)
+    sLn := line.new(bar_index, sigStop, bar_index + 1, sigStop, color = bearCol, width = 2)
+    tLn := line.new(bar_index, sigTarget, bar_index + 1, sigTarget, color = bullCol, width = 2)
+else if posDir != 0 or exitNow
+    eLn.set_x2(bar_index)
+    sLn.set_x2(bar_index)
+    tLn.set_x2(bar_index)
+
+if exitNow
+    string rTxt = (exitR >= 0 ? "+" : "") + str.tostring(exitR, "#.##") + "R"
+    label.new(bar_index, high, rTxt, yloc = yloc.abovebar, color = color.new(exitR > 0 ? bullCol : bearCol, 20), textcolor = color.white, style = label.style_label_down, size = size.tiny)
+
+int trades = wins + losses
+string statsVal = trades == 0 ? "No trades yet" : str.tostring(wins) + "W / " + str.tostring(losses) + "L · " + str.tostring(math.round(100.0 * wins / trades)) + "% · " + (totalR >= 0 ? "+" : "") + str.tostring(totalR, "#.#") + "R"
+f_drawTable("Results", statsVal)
+
+// ─── Alerts ─────────────────────────────────────────────────────────
+// Either pick a condition below, or create one alert on
+// "Any alert() function call" to get entry/stop/target in the message.
+alertcondition(longSig, "OTE long", "ICT OTE long on {{ticker}} ({{interval}}) at {{close}}")
+alertcondition(shortSig, "OTE short", "ICT OTE short on {{ticker}} ({{interval}}) at {{close}}")
+alertcondition(brkDir == 1 and isMssNow, "Bullish MSS", "Bullish MSS on {{ticker}} ({{interval}})")
+alertcondition(brkDir == -1 and isMssNow, "Bearish MSS", "Bearish MSS on {{ticker}} ({{interval}})")
+alertcondition(sslSweep, "Sell-side liquidity swept", "SSL swept on {{ticker}} ({{interval}})")
+alertcondition(bslSweep, "Buy-side liquidity swept", "BSL swept on {{ticker}} ({{interval}})")
+if longSig or shortSig
+    alert(f_alertMsg(), alert.freq_once_per_bar_close)

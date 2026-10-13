@@ -1,0 +1,37 @@
+//@version=6
+strategy("ICT OTE Toolkit [Strategy]", "ICT OTE Strat", overlay = true, initial_capital = 10000, currency = currency.USD, commission_type = strategy.commission.percent, commission_value = 0.0, slippage = 1, pyramiding = 0, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500, max_bars_back = 500)
+
+//@@CORE@@
+
+// ─── Orders ─────────────────────────────────────────────────────────
+// Signals are computed on bar close, so entries fill at the next bar's
+// open (the indicator's stats use the signal bar's close instead).
+riskPct = input.float(1.0, "Risk per trade (% of equity)", minval = 0.1, maxval = 10.0, step = 0.1, group = "Backtest")
+fracQty = input.bool(false, "Allow fractional quantity", group = "Backtest", tooltip = "On for crypto or fractional shares. Off rounds down to whole shares.")
+
+f_qty(float entry, float stop) =>
+    float perUnit = math.abs(entry - stop)
+    float raw     = perUnit > 0 ? strategy.equity * riskPct / 100 / perUnit : 0.0
+    float capped  = math.min(raw, strategy.equity / entry)  // no leverage
+    fracQty ? capped : math.floor(capped)
+
+if (longSig or shortSig) and strategy.position_size == 0
+    float qty = f_qty(sigEntry, sigStop)
+    if qty > 0
+        if longSig
+            strategy.entry("Long", strategy.long, qty = qty)
+            strategy.exit("Long exit", "Long", stop = sigStop, limit = sigTarget)
+        else
+            strategy.entry("Short", strategy.short, qty = qty)
+            strategy.exit("Short exit", "Short", stop = sigStop, limit = sigTarget)
+        alert(f_alertMsg(), alert.freq_once_per_bar_close)
+
+if eodBar and strategy.position_size != 0
+    strategy.close_all(comment = "EOD", immediately = true)
+
+plotshape(longSig, "Long signal", shape.labelup, location.belowbar, bullCol, text = "BUY", textcolor = color.white, size = size.small)
+plotshape(shortSig, "Short signal", shape.labeldown, location.abovebar, bearCol, text = "SELL", textcolor = color.white, size = size.small)
+
+int closed = strategy.closedtrades
+string statsVal = closed == 0 ? "No trades yet" : str.tostring(closed) + " trades · " + str.tostring(math.round(100.0 * strategy.wintrades / closed)) + "% · $" + str.tostring(strategy.netprofit, "#,###.##")
+f_drawTable("Backtest", statsVal)
