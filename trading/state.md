@@ -256,3 +256,12 @@ Entry template:
   - (b) Stop = day low − max(0.3%, 0.5× the day's range).
   - (c) No second same-sector MR entry on a day the first one stopped out.
 - Action: AVGO exit. No entries. Entries 2 of 3; positions 0 of 2.
+
+### 15:47 ET cycle (last of day)
+- Reconcile: flat. Account $29.17 cash (Robinhood), $30 deposit still pending. Equity recorded.
+- Entries: none possible. The any-reasonable MR tier is closed (trades qualified earlier today), and momentum had no standouts in prior cycles.
+- Day summary 10/14:
+  - AMD (clean tier) bought 583.06, stopped 577.71: −$0.13, −1.63R, score 48.
+  - AVGO (looser tier) bought 347.32, stopped 344.19: −$0.13, −1.91R, score 44.
+  - Day P&L −$0.26 (−0.9%). 2 day trades in the last 5 sessions.
+  - Both entries were dip-buys into a semis selloff that never stabilized (SMH closed near −4%). The stop-placement and sector-stabilization rule changes proposed at 14:47 await the user's decision.
