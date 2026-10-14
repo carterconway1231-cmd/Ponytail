@@ -169,3 +169,22 @@ Entry template:
 - Day-start equity recorded at $29.43. Stock size $14, option cap $14.71, daily loss limit $7.36.
 - Tape (opening, 18 min in): SPY −0.27%, QQQ −0.49%, IWM −1.04%. SMH −1.65%, XLF −1.1%, XLRE −0.8%, XLU −1.05%; XLV +1.86% (rebounding), XLP +0.5%. Risk-off open; semis weak again.
 - Action: none. The 09:47 cycle never enters (opening range; both strategies). Full scan resumes at 10:47.
+
+### 10:47 ET cycle: ENTRY AMD
+- Reconcile: flat before entry. Buying power $29.43.
+- Tape: SPY −0.77%, QQQ −1.07%, IWM −1.30%. SMH −2.05% (AI-chip selloff, 5th day), XLK −1.5%, XLF −1.3%, XLRE −1.2%, XLU −1.3%; XLV +1.5%, XLP +0.7%. Risk-off.
+- Mean reversion (clean tier):
+  - BAC −7.72% (rs −6.5): company-specific (bank earnings day) → gate 1 FAIL.
+  - ORCL −6.35% (rs −4.8): company-specific → gate 1 FAIL.
+  - META −2.32% and NVDA −2.00%: above the −3% clean-tier threshold → not eligible until the looser tier.
+  - AMD −3.40% (SMH −2.05%, rs −1.35, hint external) → ALL GATES PASS:
+    1. Cause PASS: sector-wide AI-chip selloff (AI valuation/rate worries, 5 straight down days for NVDA/AMD); no AMD-specific news.
+    2. Fundamentals PASS: Q2 2026 EPS 1.66 vs 1.55 est (beat; 6 straight beats). Next report 11/3, outside the 3-day horizon.
+    3. Anchor PASS: mean PT $654.37 (+12%), 47 Buy / 10 Hold / 0 Sell.
+    4. Trend PASS: `$B trend` downtrend false (1/3 weekly), 11.2% below 20d high 658.52.
+    - Clean-tier extras: drop ≤−3% ✓, sector down ≥1% ✓, ≥5% below 20d high ✓. Spread 584.10/584.56 = 0.08% ✓.
+  - Order: review → place market $14.00 (size from `$B gate`). Filled 0.024011 sh @ $583.0599 (order 6acf9786).
+  - Stop $579.78 (day low 581.52 − 0.3%; risk $3.28/sh = 0.56%). Target $605.53 (prior close; 10d avg 619 is farther) = 6.9R. Horizon 3 days.
+- Momentum: AAPL, HON, GE, ADBE, LLY and JPM are not standouts → gate 1 FAIL.
+- Options: AMD debit spread max loss far exceeds the $14.71 cap → stock trade instead. SPY put credit spread exceeds buying power → skip.
+- Entries today: 1 of 3. Positions: 1 of 2.
