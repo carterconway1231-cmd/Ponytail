@@ -11,7 +11,9 @@ import logging
 import time
 
 from . import exits
+from .credibility import check_credibility, extract_links, link_keys
 from .feeds import fetch_metadata
+from .market import check_market
 from .models import Decision, Position
 from .notify import dexscreener_link
 from .safety import screen
@@ -23,12 +25,14 @@ WRITE_OFF_AFTER_FAILURES = 24   # monitor ticks with no sell route before bookin
 
 class Sniper:
     def __init__(self, settings, *, state, risk, chains, dexscreener, agent, prices, hub=None,
-                 http=None, notifier=None, creators=None, outcomes=None, watchlist=None):
+                 http=None, notifier=None, creators=None, outcomes=None, watchlist=None,
+                 credibility=None, market=None):
         self.s = settings
         self.state, self.risk, self.chains = state, risk, chains     # chains: name -> ChainCtx
         self.dex, self.agent, self.prices = dexscreener, agent, prices
         self.hub, self.http, self.notifier = hub, http, notifier
         self.creators, self.outcomes, self.watchlist = creators, outcomes, watchlist
+        self.credibility, self.market = credibility, market
         self._obs_slots = asyncio.Semaphore(settings.max_concurrent_observations)
         self._sell_failures = {}
         self._tasks = set()
@@ -62,6 +66,28 @@ class Sniper:
                             creators=self.creators, trade_native=trade_usd / price if price else None,
                             trade_usd=trade_usd)
 
+    async def _enrich(self, launch, report):
+        """Credibility (website, socials, copied links) and multi-window buyer/seller data.
+        Runs only on tokens that passed the safety screen and are about to reach Claude."""
+        async def safe(coro):
+            try:
+                return await coro
+            except Exception as e:
+                log.debug("enrichment failed for %s: %s", launch.mint, e)
+                return None
+
+        async def nothing():
+            return None
+
+        cred, market = await asyncio.gather(
+            safe(self.credibility.check(launch, report.metrics.get("pair"))) if self.credibility else nothing(),
+            safe(self.market.activity(launch.chain, launch.mint)) if self.market else nothing())
+        if cred is not None:
+            check_credibility(report, cred, self.s)
+        if self.market is not None:
+            check_market(report, market, self.s)
+        return report
+
     async def _halted(self):
         halt = self.risk.halted()
         if self.notifier:
@@ -70,8 +96,14 @@ class Sniper:
 
     # --- entries -------------------------------------------------------------
     async def handle(self, launch):
-        """A newly discovered token (from a launch feed)."""
-        if launch.chain not in self.chains or not self.state.mark_seen(launch.key):
+        """A newly discovered token (launch feeds), or one already moving (trending feed)."""
+        if launch.chain not in self.chains:
+            return None
+        if launch.source == "trending":
+            # Trending tokens recur every poll: re-screen only after the watch or a rejection lapses.
+            if self.state.is_watched(launch.key) or self.state.rejected_recently(launch.chain, launch.mint):
+                return None
+        elif not self.state.mark_seen(launch.key):
             return None
         self.state.record_launch(launch)
         if await self._halted():
@@ -95,6 +127,7 @@ class Sniper:
         launch.symbol = launch.symbol or pair.get("symbol", "")
         for k, v in (pair.get("socials") or {}).items():
             launch.socials.setdefault(k, v)
+        self.state.record_links(link_keys(extract_links(launch, pair)), launch.key)
 
         if not report.passed:
             log.debug("reject %s %s: %s", launch.symbol, launch.mint, "; ".join(report.hard_fails))
@@ -103,7 +136,12 @@ class Sniper:
             return None
         if self.watchlist is not None:
             self.watchlist.add(launch)
-        if "launch" not in self.s.strategies:
+        if launch.source == "trending" or "launch" not in self.s.strategies:
+            return None             # watched: breakout/dip signals decide
+        await self._enrich(launch, report)
+        if not report.passed:
+            self.state.record_decision(launch, report)
+            self._track(launch, report, "REJECT", "launch")
             return None
         return await self._decide_and_buy(launch, report, "launch")
 
@@ -112,6 +150,8 @@ class Sniper:
         if launch.chain not in self.chains or await self._halted():
             return None
         report = await self._screen(launch)       # conditions change: re-check before buying
+        if report.passed:
+            await self._enrich(launch, report)
         if not report.passed:
             self.state.record_decision(launch, report, strategy=strategy)
             self._track(launch, report, "REJECT", strategy)

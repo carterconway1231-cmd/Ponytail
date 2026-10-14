@@ -11,3 +11,4 @@ agent_state.json
 .claude/settings.local.json
 memesniper_state.db
 MEMESNIPER_STOP
+logs/

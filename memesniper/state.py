@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS outcomes (
 );
 CREATE INDEX IF NOT EXISTS idx_out_creator ON outcomes(creator);
 CREATE INDEX IF NOT EXISTS idx_out_done ON outcomes(done);
+CREATE TABLE IF NOT EXISTS links (link TEXT, key TEXT, ts REAL, PRIMARY KEY (link, key));
 CREATE TABLE IF NOT EXISTS watchlist (
     key TEXT PRIMARY KEY, chain TEXT, token TEXT, symbol TEXT, creator TEXT, source TEXT,
     added_at REAL, expires_at REAL, last_signal_at REAL DEFAULT 0
@@ -239,6 +240,29 @@ class State:
         self.db.execute("DELETE FROM watchlist WHERE expires_at < ?", (now,))
         self.db.commit()
         return self.db.execute("SELECT * FROM watchlist ORDER BY added_at DESC").fetchall()
+
+    def is_watched(self, key, now=None):
+        return self.db.execute("SELECT 1 FROM watchlist WHERE key=? AND expires_at>=?",
+                               (key, now or time.time())).fetchone() is not None
+
+    def rejected_recently(self, chain, mint, hours=6.0):
+        return self.db.execute("SELECT 1 FROM decisions WHERE chain=? AND mint=? AND action='REJECT' "
+                               "AND ts>=?", (chain, mint, time.time() - hours * 3600)).fetchone() is not None
+
+    # --- social links (copycat detection) ------------------------------------------
+    def record_links(self, links, key):
+        for link in links:
+            self.db.execute("INSERT OR IGNORE INTO links VALUES (?,?,?)", (link, key, time.time()))
+        self.db.commit()
+
+    def link_reuse(self, links, key):
+        """{link: number of OTHER tokens that used it}, only for links seen elsewhere."""
+        out = {}
+        for link in links:
+            n = self.db.execute("SELECT COUNT(*) FROM links WHERE link=? AND key!=?", (link, key)).fetchone()[0]
+            if n:
+                out[link] = n
+        return out
 
     def mark_signal(self, key, now=None):
         self.db.execute("UPDATE watchlist SET last_signal_at=? WHERE key=?", (now or time.time(), key))

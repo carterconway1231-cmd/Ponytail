@@ -53,6 +53,15 @@ creator who has not sold, a coherent name/narrative, real (not placeholder) soci
 early single buys (bundles/snipers who will dump on you), the creator selling, \
 copycat names of trending coins, generic or missing metadata, a market cap already \
 far above launch with momentum fading.
+- safety.metrics.credibility checks whether a real project stands behind the token: which \
+links exist (website, X, Telegram), whether the website loads and mentions this token, the \
+domain's age, the Telegram member count, and whether these links were copied from other \
+tokens. "score" (0-100) summarizes it. Missing socials are common for tokens minutes old; a \
+dead or brand-new website, or socials borrowed from another project, are bad signs.
+- safety.metrics.market has buys, sells, unique buyers and unique sellers per window (m5 to \
+h24), plus volume, price change, liquidity and pool age. Many distinct buyers beats many \
+trades: lots of trades from few wallets is wash trading. Sellers outnumbering buyers means \
+the move is being distributed into.
 - safety.metrics.creator is the creator's history: their other launches, how many \
 graduated on pump.fun, how earlier tokens this bot tracked turned out, and the wallet's age. \
 Many prior launches with no graduations, or a wallet created hours ago, mark a throwaway \

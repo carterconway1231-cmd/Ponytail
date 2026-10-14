@@ -287,7 +287,51 @@ class GeckoTerminalFeed:
         return out
 
 
-def launch_from_gecko(pool, chain):
+class TrendingFeed:
+    """Tokens already moving: GeckoTerminal trending pools and DexScreener's most-boosted tokens,
+    on every enabled chain. They are screened and watched, not bought on sight: the watchlist's
+    breakout and dip signals decide."""
+
+    HEADERS = {"Accept": "application/json;version=20230302"}
+
+    def __init__(self, client, gecko_url, dexscreener_url, poll_s, chains):
+        from .chains import CHAINS
+        self.client, self.poll_s = client, poll_s
+        self.gecko, self.dex = gecko_url.rstrip("/"), dexscreener_url.rstrip("/")
+        self.chains = list(chains)
+        self.networks = [CHAINS[c].gecko_network for c in chains]
+
+    async def stream(self):
+        while True:
+            for launch in await self.poll():
+                yield launch
+            await asyncio.sleep(self.poll_s)
+
+    async def poll(self):
+        from .chains import GECKO_TO_CHAIN
+        out, seen = [], set()
+        for net in self.networks:
+            data = await get_json(self.client, f"{self.gecko}/networks/{net}/trending_pools",
+                                  headers=self.HEADERS) or {}
+            for pool in data.get("data") or []:
+                launch = launch_from_gecko(pool, GECKO_TO_CHAIN.get(net), source="trending")
+                if launch and (launch.chain, launch.mint) not in seen:
+                    seen.add((launch.chain, launch.mint))
+                    out.append(launch)
+            await asyncio.sleep(2)       # GeckoTerminal free tier: ~30 requests/minute
+        boosts = await get_json(self.client, f"{self.dex}/token-boosts/top/v1") or []
+        for b in boosts if isinstance(boosts, list) else []:
+            chain, mint = b.get("chainId"), b.get("tokenAddress")
+            if chain in self.chains and mint and (chain, mint) not in seen:
+                seen.add((chain, mint))
+                socials = {l.get("type") or l.get("label", "link"): l.get("url")
+                           for l in b.get("links") or [] if l.get("url")}
+                out.append(Launch(mint=mint, source="trending", chain=chain,
+                                  description=(b.get("description") or "")[:500], socials=socials))
+        return out
+
+
+def launch_from_gecko(pool, chain, source="geckoterminal"):
     """GeckoTerminal pool -> Launch, with its trading activity attached."""
     if not chain:
         return None
@@ -299,7 +343,7 @@ def launch_from_gecko(pool, chain):
     tx_h1 = (a.get("transactions") or {}).get("h1") or {}
     name = (a.get("name") or "").split(" / ")[0]
     return Launch(
-        mint=token, source="geckoterminal", chain=chain, name=name, symbol=name,
+        mint=token, source=source, chain=chain, name=name, symbol=name,
         pair=a.get("address", ""),
         liquidity_usd=float(a.get("reserve_in_usd") or 0),
         activity={"buys_h1": tx_h1.get("buys"), "sells_h1": tx_h1.get("sells"),

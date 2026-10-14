@@ -46,7 +46,8 @@ class Settings:
     jupiter_api_key: str = ""
     dexscreener_url: str = "https://api.dexscreener.com"
     rugcheck_url: str = "https://api.rugcheck.xyz/v1"
-    sources: tuple = ("pumpportal", "dexscreener", "geckoterminal")
+    sources: tuple = ("pumpportal", "dexscreener", "geckoterminal", "trending")
+    trending_poll_s: float = 120.0      # trending pools + boosted tokens, every chain
     dexscreener_poll_s: float = 15.0
     geckoterminal_url: str = "https://api.geckoterminal.com/api/v2"
     geckoterminal_poll_s: float = 60.0
@@ -85,6 +86,12 @@ class Settings:
     evm_max_tax_pct: float = 10.0       # buy or sell tax (GoPlus and simulated)
     evm_min_lp_locked_pct: float = 50.0 # below this: warning that liquidity can be pulled
     max_fee_pct: float = 8.0            # round-trip gas as % of the trade (Ethereum mostly)
+
+    # --- credibility and market checks (run on every candidate before Claude) --
+    cred_max_link_reuse: int = 2        # reject if its X/Telegram/website is on more other tokens
+    cred_require_social: bool = False   # reject tokens with neither X nor Telegram
+    cred_min_score: int = 0             # 0-100; 0 = Claude weighs it, no hard floor
+    max_trades_per_wallet: float = 8.0  # above this in a window = likely wash trading (warning)
 
     # --- Claude -------------------------------------------------------------
     model: str = "claude-opus-5-5"

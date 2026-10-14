@@ -30,6 +30,16 @@ async def get_json(client, url, params=None, headers=None):
         return None
 
 
+async def get_text(client, url, limit=200_000):
+    """GET a web page; returns (status, text) or (None, "") on network errors."""
+    try:
+        r = await client.get(url, follow_redirects=True, timeout=6.0)
+        return r.status_code, (r.text or "")[:limit]
+    except Exception as e:
+        log.debug("GET %s failed: %s", url, e)
+        return None, ""
+
+
 class RpcError(RuntimeError):
     pass
 

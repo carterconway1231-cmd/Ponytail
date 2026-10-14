@@ -728,7 +728,7 @@ class FakeClient:
                 return val(url) if callable(val) else val
         return Resp({}, 404)
 
-    async def get(self, url, params=None, headers=None):
+    async def get(self, url, params=None, headers=None, **kw):
         self.calls.append(("GET", url, params))
         return self._match(url)
 
@@ -1128,3 +1128,171 @@ def test_signal_decisions_get_their_own_outcome_rows(settings, state):
     assert by["breakout"] == pytest.approx(2 * 0.97)
     rep = outcomes_mod.build_report(state.outcome_rows())
     assert "breakout" in rep["buys_by_strategy"]
+
+
+# --- credibility, market activity, trending ----------------------------------------------
+
+from memesniper import credibility as cred_mod
+from memesniper import market as market_mod
+from memesniper.feeds import TrendingFeed
+
+
+class TextResp(Resp):
+    def __init__(self, text, status=200):
+        super().__init__({}, status)
+        self.text = text
+
+
+SITE = "<html><body>" + "Frog is the community coin of the pond. " * 12 + \
+       f"Contract: {MINT} Buy $FROG now</body></html>"
+TG_PAGE = '<div class="tgme_page_extra">2 345 members, 120 online</div>'
+RDAP = {"events": [{"eventAction": "registration", "eventDate": "2026-08-01T00:00:00Z"}]}
+
+
+def test_extract_links_from_metadata_and_pair():
+    l = Launch(mint=MINT, source="pumpportal", socials={
+        "twitter": "https://x.com/FrogCoin?s=21", "telegram": "t.me/frogpond", "website": "frog.xyz"})
+    pair = {"websites": ["https://ignored-second-site.com"], "socials": {"discord": "https://discord.gg/x"}}
+    links = cred_mod.extract_links(l, pair)
+    assert links == {"twitter": "frogcoin", "telegram": "frogpond", "website": "https://frog.xyz",
+                     "discord": "https://discord.gg/x"}
+    assert cred_mod.extract_links(Launch(mint=MINT, source="x", socials={"twitter": "https://x.com/search"}))== {}
+    assert cred_mod.link_keys({"website": "https://www.frog.xyz/a", "twitter": "frogcoin"}) == \
+        ["x:frogcoin", "web:frog.xyz"]
+    assert cred_mod.link_keys({"website": "https://frog.vercel.app"}) == []     # free hosting: not unique
+
+
+def test_credibility_parsers_and_score():
+    assert cred_mod.parse_tg_members(TG_PAGE) == 2345
+    assert cred_mod.parse_tg_members("<html>private group</html>") is None
+    from datetime import datetime, timezone
+    assert cred_mod.domain_age_days(RDAP, now=datetime(2026, 10, 14, tzinfo=timezone.utc)) == 74
+    l = Launch(mint=MINT, source="x", symbol="FROG")
+    web = cred_mod.website_facts(200, SITE, l)
+    assert web["live"] and web["mentions_token"]
+    assert not cred_mod.website_facts(200, "<html>coming soon</html>", l)["live"]
+    full = {"links": {"twitter": "a", "telegram": "b", "website": "c"}, "website": web,
+            "domain_age_days": 74, "telegram_members": 2345, "description": "x" * 50, "reused_by": {}}
+    assert cred_mod.score(full) == 100
+    assert cred_mod.score({"links": {}, "reused_by": {}}) == 0
+
+
+def test_credibility_checker_end_to_end(settings, state):
+    client = FakeClient({"rdap.org": Resp(RDAP), "frog.xyz": TextResp(SITE),
+                         "t.me/frogpond": TextResp(TG_PAGE)})
+    checker = cred_mod.CredibilityChecker(settings, state, client)
+    l = Launch(mint=MINT, source="pumpportal", symbol="FROG", description="The pond's own coin, built by frogs",
+               socials={"twitter": "https://x.com/frogcoin", "telegram": "https://t.me/frogpond",
+                        "website": "https://frog.xyz"})
+    facts = run(checker.check(l))
+    assert facts["website"]["mentions_token"] and facts["telegram_members"] == 2345
+    assert facts["domain_age_days"] >= 70 and facts["score"] >= 90 and facts["reused_by"] == {}
+    # Three copycat tokens reuse the same X and Telegram.
+    for i in range(3):
+        copy = Launch(mint=f"copy{i}", source="pumpportal", symbol="FROG2",
+                      socials={"twitter": "https://x.com/frogcoin", "telegram": "https://t.me/frogpond"})
+        facts = run(checker.check(copy))
+    assert facts["reused_by"] == {"x:frogcoin": 3, "tg:frogpond": 3}
+    r = SafetyReport("copy2")
+    cred_mod.check_credibility(r, facts, settings)
+    assert not r.passed and "socials copied" in r.hard_fails[0]
+
+
+def test_credibility_hard_rules_are_opt_in(settings):
+    facts = {"links": {}, "reused_by": {}, "score": 0}
+    r = SafetyReport(MINT)
+    cred_mod.check_credibility(r, dict(facts), settings)
+    assert r.passed                                          # defaults: Claude weighs it
+    strict = Settings(**{**settings.__dict__, "cred_require_social": True, "cred_min_score": 40})
+    r = SafetyReport(MINT)
+    cred_mod.check_credibility(r, dict(facts), strict)
+    assert len(r.hard_fails) == 2
+
+
+POOL = {"attributes": {"address": "0xpool", "reserve_in_usd": "80000", "fdv_usd": "400000",
+                       "pool_created_at": "2026-10-14T10:00:00Z",
+                       "transactions": {"m5": {"buys": 40, "sells": 10, "buyers": 35, "sellers": 9},
+                                        "h1": {"buys": 900, "sells": 300, "buyers": 60, "sellers": 40}},
+                       "volume_usd": {"m5": "9000", "h1": "70000"},
+                       "price_change_percentage": {"m5": "4.2", "h1": "18"}},
+        "relationships": {"dex": {"data": {"id": "uniswap_v3"}}}}
+
+
+def test_market_summary_and_warnings(settings):
+    from datetime import datetime, timezone
+    m = market_mod.summarize_pool(POOL, now=datetime(2026, 10, 14, 11, 0, tzinfo=timezone.utc))
+    assert m["pool_age_minutes"] == 60.0 and m["dex"] == "uniswap_v3"
+    assert m["windows"]["m5"] == {"buys": 40, "sells": 10, "buyers": 35, "sellers": 9,
+                                  "volume_usd": 9000.0, "price_change_pct": 4.2}
+    assert m["buyer_seller_ratio_h1"] == 1.5
+    r = SafetyReport(TOKEN)
+    market_mod.check_market(r, m, settings)
+    assert any("wash trading" in w for w in r.warnings)       # 1200 trades from 100 wallets (h1)
+    md = market_mod.MarketData(FakeClient({"/tokens/": Resp({"data": [POOL]})}), "https://gt")
+    assert run(md.activity("base", TOKEN))["liquidity_usd"] == 80000.0
+
+
+class FakeCred:
+    def __init__(self, facts):
+        self.facts = facts
+
+    async def check(self, launch, pair=None):
+        return dict(self.facts)
+
+
+class FakeMarket:
+    async def activity(self, chain, token):
+        return market_mod.summarize_pool(POOL)
+
+
+def test_claude_sees_credibility_and_market(settings, state):
+    sniper, agent, _ = make_sniper(settings, state, BUY)
+    seen = {}
+
+    async def capture(launch, report, *a, **k):
+        seen.update(report.metrics)
+        return BUY
+    agent.decide = capture
+    sniper.credibility = FakeCred({"links": {"twitter": "frog"}, "reused_by": {}, "score": 55})
+    sniper.market = FakeMarket()
+    assert run(sniper.handle(pump_launch())) is not None
+    assert seen["credibility"]["score"] == 55 and seen["market"]["windows"]["m5"]["buyers"] == 35
+
+
+def test_copycat_socials_are_rejected_before_claude(settings, state):
+    sniper, agent, _ = make_sniper(settings, state, BUY)
+    sniper.credibility = FakeCred({"links": {"twitter": "frog"}, "reused_by": {"x:frog": 5}, "score": 30})
+    assert run(sniper.handle(pump_launch())) is None and agent.calls == 0
+    row = state.db.execute("SELECT action, reasoning FROM decisions").fetchone()
+    assert row["action"] == "REJECT" and "socials copied" in row["reasoning"]
+
+
+def test_trending_tokens_are_watched_not_bought(settings, state):
+    sniper, agent, _ = make_sniper(settings, state, BUY)
+    sniper.watchlist = wl.Watchlist(settings, state, FakeDex())
+    hot = Launch(mint=MINT, source="trending", symbol="FROG", creator=CREATOR, bonding_curve=CURVE)
+    assert run(sniper.handle(hot)) is None and agent.calls == 0
+    assert state.is_watched(MINT)
+    n = state.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
+    run(sniper.handle(Launch(mint=MINT, source="trending")))            # next poll: already watched
+    assert state.db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == n
+    sniper2, _, _ = make_sniper(settings, state, BUY, rpc=FakeRpc(mint_authority="X"))
+    bad = Launch(mint="bad", source="trending")
+    sniper2.chains["solana"].router.price["bad"] = 1e-6
+    run(sniper2.handle(bad))
+    assert state.rejected_recently("solana", "bad")
+
+
+def test_trending_feed_parses_gecko_and_dexscreener(monkeypatch):
+    import memesniper.feeds as feeds_mod
+    monkeypatch.setattr(feeds_mod.asyncio, "sleep", _no_sleep)
+    pool = {"attributes": {"address": "0xp", "name": "BCAT / WETH", "reserve_in_usd": "1"},
+            "relationships": {"base_token": {"data": {"id": f"base_{TOKEN}"}}}}
+    client = FakeClient({"/networks/base/trending_pools": Resp({"data": [pool]}),
+                         "/networks/solana/trending_pools": Resp({"data": []}),
+                         "token-boosts/top": Resp([{"chainId": "solana", "tokenAddress": MINT},
+                                                   {"chainId": "base", "tokenAddress": TOKEN},
+                                                   {"chainId": "tron", "tokenAddress": "T"}])})
+    got = run(TrendingFeed(client, "https://gt", "https://ds", 1, ("solana", "base")).poll())
+    assert [(l.chain, l.mint, l.source) for l in got] == [("base", TOKEN, "trending"),
+                                                          ("solana", MINT, "trending")]

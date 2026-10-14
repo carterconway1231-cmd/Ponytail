@@ -8,10 +8,14 @@ stock/options bot and shares no state with it. **Paper trading is the default.**
  PumpPortal ws ───┐ new pump.fun tokens + migrations (Solana)
  GeckoTerminal ───┤ new pools on every enabled chain
  DexScreener  ────┤ newly profiled tokens on every enabled chain
+ Trending  ───────┤ GeckoTerminal trending pools + DexScreener top boosts → screen → watchlist only
                   ▼
    launch: dedupe ─► observe (pump.fun 30s / pool stats) ─► safety screen (code, per chain)
                                                               │ hard fail → journal, stop
                      passed tokens join the WATCHLIST ◄───────┤
+                                                              ▼
+                     credibility (website, X, Telegram, copied socials, domain age)
+                     + market (buys/sells, unique buyers/sellers, volume per window)
    watchlist, every 60s for 24h:                              ▼
      breakout score ≥ 0.7  ─┐            Claude (BUY/SKIP, size in USD, exits)
      dip in an uptrend     ─┴─► re-screen ─────────►          ▼
@@ -32,6 +36,8 @@ stock/options bot and shares no state with it. **Paper trading is the default.**
 | Hard screen, Solana | code | Mint and freeze authority revoked. No Token-2022 fee/hook/delegate/pause extensions. RugCheck score ≤ 5000. |
 | Hard screen, EVM | code | GoPlus: no honeypot, hidden owner, reclaimable ownership, owner-editable balances, blacklist, pausable trading, adjustable tax, self-destruct; source verified; buy and sell tax ≤ 10%. honeypot.is: a simulated buy and sell succeeds with ≤ 10% tax. Round-trip gas ≤ 8% of the trade (filters most small Ethereum trades). Warnings for Claude: unlocked liquidity, mintable supply, upgradeable proxy. |
 | Hard screen, all chains | code | Top-10 holders ≤ 35% (pools, curves, locks excluded). Creator holds ≤ 10%. A buy→sell quote round trip loses ≤ 12%. ≥ 8 distinct buyers. Dev sold ≤ 50%. ≥ $5k liquidity off the pump.fun curve. Creator has no rug seen by this bot and ≤ 3 other launches in 24h. Fails never reach Claude. |
+| Credibility | code + **Claude** | For every candidate that passes the screen: collects website, X, Telegram and Discord links; checks the website loads, has real content and mentions this token; looks up the domain's registration date (RDAP); reads the Telegram member count; flags socials already used by other tokens. 0–100 score for Claude. Hard rejects: socials copied by more than `CRED_MAX_LINK_REUSE` (2) other tokens; optionally no socials (`CRED_REQUIRE_SOCIAL`) or a low score (`CRED_MIN_SCORE`). X itself can't be read without a paid API, so handles are collected, not verified. |
+| Market activity | code + **Claude** | GeckoTerminal per-window (5m, 15m, 30m, 1h, 24h) buys, sells, **unique buyers and sellers**, volume, price change, liquidity and pool age. Warnings for sellers outnumbering buyers 2:1 and for many trades from few wallets (wash trading). |
 | Watchlist | code | Every token that passes joins the watchlist for 24h and is re-scored every minute. **Breakout:** volume speeding up, buyers outnumbering sellers, price and liquidity rising; score ≥ 0.7, and not already up >300% in the hour. **Dip:** up ≥ 50% over 6h, now 15–40% off its 2h high, liquidity ≥ 85% of its peak, buyers back in control. A signal re-runs the full safety screen first. |
 | Entry | **Claude** | One structured-output call per candidate (`claude-opus-5-5`, effort `low`, 25s timeout). Sees the chain, strategy and signal, token, metadata, safety metrics and warnings, portfolio state and the last 10 closed trades. Returns BUY/SKIP, confidence, size in USD, take-profit, stop and max hold. Timeouts, errors and refusals mean SKIP. Strategies left out of `CLAUDE_STRATEGIES` buy on the signal alone. |
 | Risk | code | All caps in USD across every chain together: ≤ $10/trade, ≤ 4 open positions, ≤ $40 at risk, ≤ $80 spent/day, $40 daily loss limit (realized plus open positions marked at their stops), ≤ 6 entries/hour, one trade per creator per 24h, never twice in the same token, $5 left in each wallet for gas. Claude's confidence ≥ 0.6. Claude can tighten stops and holds but never loosen them. No native-coin price means no trade. |
@@ -49,6 +55,7 @@ signals actually pay, per chain.
 pip install -r requirements.txt
 export ANTHROPIC_API_KEY=...                  # or `ant auth login`
 python -m memesniper run                      # paper: real launches, real quotes, simulated fills
+bash memesniper/scripts/run-forever.sh        # same, restarting automatically after crashes (logs/)
 python -m memesniper status                   # open positions, today's P&L, Claude spend, halt reason
 python -m memesniper journal -n 50            # every decision, including rejections and Claude's reasoning
 python -m memesniper check <ADDRESS> --chain base --ask   # screen one token (+ask Claude), no trade
@@ -177,6 +184,9 @@ limit pauses it. Set any of these in `.env`, then run `python -m memesniper test
 | `chains.py` | Chain registry (Solana, Base, BSC, Ethereum) and per-chain context |
 | `feeds.py` | PumpPortal websocket hub, DexScreener and GeckoTerminal feeds, watchlist snapshots |
 | `watchlist.py` | Watchlist, breakout score, dip signal, momentum-fade detection |
+| `credibility.py` | Website, domain age, Telegram members, copied-socials detection, credibility score |
+| `market.py` | Per-window buyers/sellers, volume and liquidity from GeckoTerminal |
+| `scripts/run-forever.sh` | Keeps the bot running: restarts it after crashes, logs to `logs/` |
 | `safety.py` | Hard rug screen per chain (RPC, RugCheck, round trip, holders, observation) |
 | `evm_safety.py` | EVM checks: GoPlus contract flags and taxes, honeypot.is simulation, gas guard |
 | `evm.py` | KyberSwap routing, EVM JSON-RPC, signing, paper and live EVM executors |

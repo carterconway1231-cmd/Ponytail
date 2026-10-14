@@ -18,7 +18,9 @@ def build(settings):
     from .evm import EvmLiveExecutor, EvmPaperExecutor, EvmRpc, KyberRouter
     from .evm_safety import GoPlus, HoneypotIs
     from .executor import LiveExecutor, PaperExecutor
-    from .feeds import DexScreenerFeed, GeckoTerminalFeed, PumpPortalHub
+    from .credibility import CredibilityChecker
+    from .feeds import DexScreenerFeed, GeckoTerminalFeed, PumpPortalHub, TrendingFeed
+    from .market import MarketData
     from .jupiter import Jupiter
     from .net import SolanaRpc, make_client
     from .notify import Notifier
@@ -57,10 +59,15 @@ def build(settings):
                     notifier=Notifier(settings, http),
                     creators=CreatorProfiler(settings, state, sol_rpc, http),
                     outcomes=OutcomeTracker(settings, state, {c: x.router for c, x in chains.items()}, prices),
-                    watchlist=Watchlist(settings, state, dex))
+                    watchlist=Watchlist(settings, state, dex),
+                    credibility=CredibilityChecker(settings, state, http),
+                    market=MarketData(http, settings.geckoterminal_url))
     feeds = [hub] if hub else []
     if "dexscreener" in settings.sources:
         feeds.append(dex)
+    if "trending" in settings.sources:
+        feeds.append(TrendingFeed(http, settings.geckoterminal_url, settings.dexscreener_url,
+                                  settings.trending_poll_s, settings.chains))
     if "geckoterminal" in settings.sources:
         feeds.append(GeckoTerminalFeed(http, settings.geckoterminal_url, settings.geckoterminal_poll_s,
                                        settings.chains))
@@ -130,6 +137,8 @@ def cmd_check(args):
             sys.exit(f"chain {args.chain} is not enabled (MEMESNIPER_CHAINS)")
         launch = Launch(mint=args.mint, source="manual", chain=args.chain)
         report = await sniper._screen(launch)
+        if report.passed:
+            await sniper._enrich(launch, report)
         out = {"passed": report.passed, "hard_fails": report.hard_fails,
                "warnings": report.warnings, "metrics": report.metrics}
         if args.ask and report.passed:
