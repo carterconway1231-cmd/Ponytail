@@ -52,7 +52,7 @@ signals actually pay, per chain.
 ## Quick start (paper)
 
 ```bash
-pip install -r requirements.txt
+pip install -r memesniper/requirements.txt   # just the sniper's libraries
 export ANTHROPIC_API_KEY=...                  # or `ant auth login`
 python -m memesniper run                      # paper: real launches, real quotes, simulated fills
 bash memesniper/scripts/run-forever.sh        # same, restarting automatically after crashes (logs/)

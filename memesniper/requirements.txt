@@ -1,0 +1,7 @@
+# memesniper only (the repo-root requirements.txt also pulls in the Ponytail stock bot's deps)
+anthropic>=1.13
+solders>=0.29
+websockets>=13
+eth-account>=0.13
+python-dotenv
+pytest
