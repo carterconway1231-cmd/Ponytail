@@ -6,8 +6,10 @@ from dataclasses import dataclass, field, asdict
 @dataclass
 class Launch:
     """A newly seen token. Fields a source doesn't know stay at their defaults."""
-    mint: str
-    source: str                         # pumpportal | pumpportal-migration | dexscreener
+    mint: str                           # token address (Solana mint or EVM contract)
+    source: str                         # pumpportal | pumpportal-migration | dexscreener | geckoterminal | watchlist
+    chain: str = "solana"
+    pair: str = ""                      # pool/pair address when known
     name: str = ""
     symbol: str = ""
     creator: str = ""
@@ -20,7 +22,13 @@ class Launch:
     liquidity_usd: float = 0.0
     description: str = ""
     socials: dict = field(default_factory=dict)
+    activity: dict = field(default_factory=dict)    # pool stats from GeckoTerminal, if any
     seen_at: float = field(default_factory=time.time)
+
+    @property
+    def key(self):
+        from .chains import token_key
+        return token_key(self.chain, self.mint)
 
 
 @dataclass
@@ -73,7 +81,8 @@ class SafetyReport:
 class Decision:
     action: str                         # BUY | SKIP
     confidence: float = 0.0
-    size_sol: float = 0.0
+    size_usd: float = 0.0               # what Claude asked for
+    size_native: float = 0.0            # set by RiskManager after clamping (SOL/ETH/BNB)
     take_profit_pct: float = 0.0
     stop_loss_pct: float = 0.0
     max_hold_minutes: float = 0.0
@@ -85,20 +94,25 @@ class Decision:
 
 @dataclass
 class Position:
+    """Amounts named *_sol are in the chain's native coin (SOL, ETH or BNB)."""
     mint: str
     symbol: str
-    entry_sol: float                    # SOL spent
+    entry_sol: float                    # native coin spent, fees included
     tokens: float                       # raw token units held
-    entry_price: float                  # SOL per raw token unit
+    entry_price: float                  # native coin per raw token unit
     opened_at: float
     take_profit_pct: float
     stop_loss_pct: float
     trailing_stop_pct: float
     max_hold_minutes: float
     high_water_price: float = 0.0
-    tp_taken: bool = False
-    realized_sol: float = 0.0           # SOL received from partial sells
+    tp_taken: int = 0                   # take-profit ladder rungs already sold
+    realized_sol: float = 0.0           # native coin received from sells so far
     id: int = 0
+    chain: str = "solana"
+    strategy: str = "launch"
+    entry_usd: float = 0.0
+    realized_usd: float = 0.0
 
     def to_dict(self):
         return asdict(self)

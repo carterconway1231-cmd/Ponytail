@@ -34,11 +34,26 @@ CREATE TABLE IF NOT EXISTS outcomes (
 );
 CREATE INDEX IF NOT EXISTS idx_out_creator ON outcomes(creator);
 CREATE INDEX IF NOT EXISTS idx_out_done ON outcomes(done);
+CREATE TABLE IF NOT EXISTS watchlist (
+    key TEXT PRIMARY KEY, chain TEXT, token TEXT, symbol TEXT, creator TEXT, source TEXT,
+    added_at REAL, expires_at REAL, last_signal_at REAL DEFAULT 0
+);
 """
+
+# Columns added after the first release; existing databases get them on open.
+MIGRATIONS = {
+    "positions": {"chain": "TEXT DEFAULT 'solana'", "strategy": "TEXT DEFAULT 'launch'",
+                  "entry_usd": "REAL DEFAULT 0", "realized_usd": "REAL DEFAULT 0"},
+    "decisions": {"chain": "TEXT DEFAULT 'solana'", "strategy": "TEXT DEFAULT 'launch'",
+                  "size_usd": "REAL DEFAULT 0"},
+    "launches": {"chain": "TEXT DEFAULT 'solana'"},
+    "outcomes": {"chain": "TEXT DEFAULT 'solana'", "strategy": "TEXT DEFAULT 'launch'", "token": "TEXT"},
+}
 
 POSITION_FIELDS = ("mint", "symbol", "entry_sol", "tokens", "entry_price", "opened_at",
                    "take_profit_pct", "stop_loss_pct", "trailing_stop_pct", "max_hold_minutes",
-                   "high_water_price", "tp_taken", "realized_sol", "id")
+                   "high_water_price", "tp_taken", "realized_sol", "id", "chain", "strategy",
+                   "entry_usd", "realized_usd")
 
 
 def day_start(now=None):
@@ -51,12 +66,17 @@ class State:
         self.db = sqlite3.connect(path)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        for table, cols in MIGRATIONS.items():
+            have = {r["name"] for r in self.db.execute(f"PRAGMA table_info({table})")}
+            for col, decl in cols.items():
+                if col not in have:
+                    self.db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
         self.db.commit()
 
     # --- dedupe --------------------------------------------------------------
-    def mark_seen(self, mint):
-        """True if this mint is new (and records it)."""
-        cur = self.db.execute("INSERT OR IGNORE INTO seen VALUES (?, ?)", (mint, time.time()))
+    def mark_seen(self, key):
+        """True if this token (launch.key) is new, and records it."""
+        cur = self.db.execute("INSERT OR IGNORE INTO seen VALUES (?, ?)", (key, time.time()))
         self.db.commit()
         return cur.rowcount == 1
 
@@ -65,10 +85,11 @@ class State:
         cur = self.db.execute(
             "INSERT INTO positions (mint, symbol, creator, mode, entry_sol, tokens, entry_price, "
             "opened_at, take_profit_pct, stop_loss_pct, trailing_stop_pct, max_hold_minutes, "
-            "high_water_price, entry_sig) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "high_water_price, entry_sig, chain, strategy, entry_usd) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (p.mint, p.symbol, creator, mode, p.entry_sol, p.tokens, p.entry_price, p.opened_at,
              p.take_profit_pct, p.stop_loss_pct, p.trailing_stop_pct, p.max_hold_minutes,
-             p.entry_price, sig))
+             p.entry_price, sig, p.chain, p.strategy, p.entry_usd))
         self.db.commit()
         p.id = cur.lastrowid
         p.high_water_price = p.high_water_price or p.entry_price
@@ -80,8 +101,9 @@ class State:
 
     def save_position(self, p: Position):
         self.db.execute("UPDATE positions SET tokens=?, high_water_price=?, tp_taken=?, "
-                        "realized_sol=? WHERE id=?",
-                        (p.tokens, p.high_water_price, int(p.tp_taken), p.realized_sol, p.id))
+                        "realized_sol=?, realized_usd=? WHERE id=?",
+                        (p.tokens, p.high_water_price, int(p.tp_taken), p.realized_sol,
+                         p.realized_usd, p.id))
         self.db.commit()
 
     def add_exit_sig(self, pid, sig):
@@ -92,8 +114,8 @@ class State:
 
     def close_position(self, p: Position, reason):
         self.db.execute("UPDATE positions SET status='closed', closed_at=?, exit_reason=?, "
-                        "tokens=?, realized_sol=? WHERE id=?",
-                        (time.time(), reason, p.tokens, p.realized_sol, p.id))
+                        "tokens=?, realized_sol=?, realized_usd=? WHERE id=?",
+                        (time.time(), reason, p.tokens, p.realized_sol, p.realized_usd, p.id))
         self.db.commit()
 
     def closed_positions(self, limit=20):
@@ -102,13 +124,19 @@ class State:
 
     # --- risk inputs ---------------------------------------------------------
     def spent_today(self):
-        return self.db.execute("SELECT COALESCE(SUM(entry_sol),0) FROM positions WHERE opened_at>=?",
+        """USD spent on entries today, across chains."""
+        return self.db.execute("SELECT COALESCE(SUM(entry_usd),0) FROM positions WHERE opened_at>=?",
                                (day_start(),)).fetchone()[0]
 
     def realized_pnl_today(self):
+        """USD profit/loss of positions closed today."""
         return self.db.execute(
-            "SELECT COALESCE(SUM(realized_sol - entry_sol),0) FROM positions "
+            "SELECT COALESCE(SUM(realized_usd - entry_usd),0) FROM positions "
             "WHERE status='closed' AND closed_at>=?", (day_start(),)).fetchone()[0]
+
+    def holding(self, chain, mint):
+        return self.db.execute("SELECT 1 FROM positions WHERE status='open' AND chain=? AND mint=?",
+                               (chain, mint)).fetchone() is not None
 
     def entries_since(self, ts):
         return self.db.execute("SELECT COUNT(*) FROM positions WHERE opened_at>=?", (ts,)).fetchone()[0]
@@ -127,8 +155,9 @@ class State:
     # --- creator history -----------------------------------------------------
     def record_launch(self, launch):
         if launch.creator:
-            self.db.execute("INSERT OR IGNORE INTO launches VALUES (?,?,?,?)",
-                            (launch.mint, launch.creator, launch.seen_at, launch.source))
+            self.db.execute("INSERT OR IGNORE INTO launches (mint, creator, ts, source, chain) "
+                            "VALUES (?,?,?,?,?)",
+                            (launch.mint, launch.creator, launch.seen_at, launch.source, launch.chain))
             self.db.commit()
 
     def creator_stats(self, creator, exclude_mint, now=None):
@@ -141,7 +170,8 @@ class State:
         seen, day = self.db.execute(
             "SELECT COUNT(*), SUM(ts >= ?) FROM launches WHERE creator=? AND mint!=?",
             (now - 86_400, creator, exclude_mint)).fetchone()
-        rows = self.db.execute("SELECT r5m, r15m, r1h, r4h FROM outcomes WHERE creator=? AND mint!=?",
+        rows = self.db.execute("SELECT r5m, r15m, r1h, r4h FROM outcomes WHERE creator=? "
+                               "AND COALESCE(token, mint)!=? AND strategy='launch'",
                                (creator, exclude_mint)).fetchall()
         rugs, best = 0, None
         for r in rows:
@@ -155,11 +185,15 @@ class State:
                 "prior_rugs": rugs, "best_prior_x": round(best, 2) if best is not None else None}
 
     # --- outcomes --------------------------------------------------------------
-    def start_outcome(self, launch, verdict, reason, ref_sol, ref_tokens):
+    def start_outcome(self, launch, verdict, reason, ref_sol, ref_tokens, strategy="launch"):
+        """One row per decision. `mint` is the row key (a token can be decided on at launch and
+        again on later watchlist signals); `token` is the address that gets re-quoted."""
+        now = time.time()
+        key = launch.mint if strategy == "launch" else f"{strategy}:{launch.mint}:{int(now)}"
         self.db.execute("INSERT OR IGNORE INTO outcomes (mint, symbol, creator, source, verdict, reason, "
-                        "ts, ref_sol, ref_tokens) VALUES (?,?,?,?,?,?,?,?,?)",
-                        (launch.mint, launch.symbol, launch.creator, launch.source, verdict, reason,
-                         time.time(), ref_sol, ref_tokens))
+                        "ts, ref_sol, ref_tokens, chain, strategy, token) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (key, launch.symbol, launch.creator, launch.source, verdict, reason,
+                         now, ref_sol, ref_tokens, launch.chain, strategy, launch.mint))
         self.db.commit()
 
     def pending_outcomes(self):
@@ -176,18 +210,38 @@ class State:
         return self.db.execute("SELECT * FROM outcomes WHERE ts>=?", (since,)).fetchall()
 
     # --- decisions -----------------------------------------------------------
-    def record_decision(self, launch, report, decision=None, executed=False):
+    def record_decision(self, launch, report, decision=None, executed=False, strategy="launch"):
         d = decision
         self.db.execute(
             "INSERT INTO decisions (ts, mint, symbol, source, passed_safety, hard_fails, warnings, "
-            "metrics, action, confidence, size_sol, reasoning, model, cost_usd, latency_s, executed) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "metrics, action, confidence, size_sol, reasoning, model, cost_usd, latency_s, executed, "
+            "chain, strategy, size_usd) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (time.time(), launch.mint, launch.symbol, launch.source, int(report.passed),
              json.dumps(report.hard_fails), json.dumps(report.warnings),
              json.dumps(report.metrics, default=str),
-             d.action if d else "REJECT", d.confidence if d else 0, d.size_sol if d else 0,
+             d.action if d else "REJECT", d.confidence if d else 0, d.size_native if d else 0,
              d.reasoning if d else "; ".join(report.hard_fails), d.model if d else "",
-             d.cost_usd if d else 0, d.latency_s if d else 0, int(executed)))
+             d.cost_usd if d else 0, d.latency_s if d else 0, int(executed),
+             launch.chain, strategy, d.size_usd if d else 0))
+        self.db.commit()
+
+    # --- watchlist ---------------------------------------------------------------
+    def watch(self, launch, hours, now=None):
+        now = now or time.time()
+        self.db.execute("INSERT OR IGNORE INTO watchlist (key, chain, token, symbol, creator, source, "
+                        "added_at, expires_at) VALUES (?,?,?,?,?,?,?,?)",
+                        (launch.key, launch.chain, launch.mint, launch.symbol, launch.creator,
+                         launch.source, now, now + hours * 3600))
+        self.db.commit()
+
+    def watched(self, now=None):
+        now = now or time.time()
+        self.db.execute("DELETE FROM watchlist WHERE expires_at < ?", (now,))
+        self.db.commit()
+        return self.db.execute("SELECT * FROM watchlist ORDER BY added_at DESC").fetchall()
+
+    def mark_signal(self, key, now=None):
+        self.db.execute("UPDATE watchlist SET last_signal_at=? WHERE key=?", (now or time.time(), key))
         self.db.commit()
 
     def decision_stats(self, since):

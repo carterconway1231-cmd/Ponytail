@@ -157,9 +157,35 @@ class PumpPortalHub:
             yield await self.launches.get()
 
 
+def snapshot_from_pair(p, now=None):
+    """One DexScreener pair -> the numbers the watchlist scores."""
+    txm5 = (p.get("txns") or {}).get("m5") or {}
+    vol, chg = p.get("volume") or {}, p.get("priceChange") or {}
+    return {
+        "ts": now or time.time(),
+        "price_usd": float(p.get("priceUsd") or 0),
+        "liquidity_usd": float((p.get("liquidity") or {}).get("usd") or 0),
+        "fdv_usd": float(p.get("fdv") or 0),
+        "vol_m5": float(vol.get("m5") or 0), "vol_h1": float(vol.get("h1") or 0),
+        "buys_m5": int(txm5.get("buys") or 0), "sells_m5": int(txm5.get("sells") or 0),
+        "chg_m5": float(chg.get("m5") or 0), "chg_h1": float(chg.get("h1") or 0),
+        "chg_h6": float(chg.get("h6") or 0),
+    }
+
+
+def _best_pair(pairs, token):
+    """Deepest pair where the token is the base asset."""
+    own = [p for p in pairs if (p.get("baseToken") or {}).get("address", "").lower() == token.lower()]
+    own = own or pairs
+    return max(own, key=lambda p: (p.get("liquidity") or {}).get("usd") or 0) if own else None
+
+
 class DexScreenerFeed:
-    def __init__(self, client, base_url, poll_s):
+    """New token profiles on every enabled chain, plus pair lookups for screening and the watchlist."""
+
+    def __init__(self, client, base_url, poll_s, chains=("solana",)):
         self.client, self.base, self.poll_s = client, base_url.rstrip("/"), poll_s
+        self.chains = set(chains)
         self._seen = set()
 
     async def stream(self):
@@ -170,30 +196,31 @@ class DexScreenerFeed:
 
     async def poll(self):
         profiles = await get_json(self.client, f"{self.base}/token-profiles/latest/v1") or []
-        fresh = [p for p in profiles
-                 if p.get("chainId") == "solana" and p.get("tokenAddress") not in self._seen]
         out = []
-        for p in fresh:
-            mint = p["tokenAddress"]
-            self._seen.add(mint)
+        for p in profiles:
+            chain, mint = p.get("chainId"), p.get("tokenAddress")
+            if chain not in self.chains or not mint or (chain, mint) in self._seen:
+                continue
+            self._seen.add((chain, mint))
             socials = {l.get("type") or l.get("label", "link"): l.get("url")
                        for l in p.get("links") or [] if l.get("url")}
-            out.append(Launch(mint=mint, source="dexscreener",
+            out.append(Launch(mint=mint, source="dexscreener", chain=chain,
                               description=(p.get("description") or "")[:500], socials=socials))
         if len(self._seen) > 50_000:
             self._seen = set(list(self._seen)[-10_000:])
         return out
 
-    async def pair_info(self, mint):
-        """Best Solana pair for a token: liquidity, volume, price change, age, socials."""
-        data = await get_json(self.client, f"{self.base}/tokens/v1/solana/{mint}")
+    async def pair_info(self, mint, chain="solana"):
+        """Best pair for a token: liquidity, volume, price change, age, socials."""
+        data = await get_json(self.client, f"{self.base}/tokens/v1/{chain}/{mint}")
         pairs = data if isinstance(data, list) else (data or {}).get("pairs") or []
-        if not pairs:
+        best = _best_pair(pairs, mint)
+        if not best:
             return None
-        best = max(pairs, key=lambda p: (p.get("liquidity") or {}).get("usd") or 0)
         info = best.get("info") or {}
         return {
             "dex": best.get("dexId"),
+            "pair": best.get("pairAddress"),
             "name": (best.get("baseToken") or {}).get("name", ""),
             "symbol": (best.get("baseToken") or {}).get("symbol", ""),
             "liquidity_usd": (best.get("liquidity") or {}).get("usd") or 0.0,
@@ -202,11 +229,84 @@ class DexScreenerFeed:
             "volume_h1_usd": (best.get("volume") or {}).get("h1") or 0.0,
             "price_change_m5_pct": (best.get("priceChange") or {}).get("m5") or 0.0,
             "price_change_h1_pct": (best.get("priceChange") or {}).get("h1") or 0.0,
+            "price_change_h6_pct": (best.get("priceChange") or {}).get("h6") or 0.0,
             "txns_m5": (best.get("txns") or {}).get("m5") or {},
             "pair_created_at_ms": best.get("pairCreatedAt"),
             "websites": [w.get("url") for w in info.get("websites") or []],
             "socials": {s.get("type"): s.get("url") for s in info.get("socials") or []},
         }
+
+    async def snapshots(self, chain, tokens):
+        """Batch lookup (30 per request) -> {token_lower: snapshot}."""
+        out, now = {}, time.time()
+        for i in range(0, len(tokens), 30):
+            batch = tokens[i:i + 30]
+            data = await get_json(self.client, f"{self.base}/tokens/v1/{chain}/{','.join(batch)}")
+            pairs = data if isinstance(data, list) else []
+            by_token = {}
+            for p in pairs:
+                addr = (p.get("baseToken") or {}).get("address", "")
+                by_token.setdefault(addr.lower(), []).append(p)
+            for t in batch:
+                best = _best_pair(by_token.get(t.lower(), []), t)
+                if best:
+                    out[t.lower()] = snapshot_from_pair(best, now)
+        return out
+
+
+class GeckoTerminalFeed:
+    """New pools on every enabled chain. Free API, ~30 requests/minute, so chains are polled in turn."""
+
+    HEADERS = {"Accept": "application/json;version=20230302"}
+
+    def __init__(self, client, base_url, poll_s, chains):
+        from .chains import CHAINS
+        self.client, self.base, self.poll_s = client, base_url.rstrip("/"), poll_s
+        self.networks = [CHAINS[c].gecko_network for c in chains]
+        self._seen = set()
+
+    async def stream(self):
+        while True:
+            for net in self.networks:
+                for launch in await self.poll(net):
+                    yield launch
+                await asyncio.sleep(max(self.poll_s / max(len(self.networks), 1), 3))
+
+    async def poll(self, network):
+        from .chains import GECKO_TO_CHAIN
+        data = await get_json(self.client, f"{self.base}/networks/{network}/new_pools",
+                              headers=self.HEADERS) or {}
+        out = []
+        for pool in data.get("data") or []:
+            launch = launch_from_gecko(pool, GECKO_TO_CHAIN.get(network))
+            if launch and (launch.chain, launch.mint) not in self._seen:
+                self._seen.add((launch.chain, launch.mint))
+                out.append(launch)
+        if len(self._seen) > 50_000:
+            self._seen = set(list(self._seen)[-10_000:])
+        return out
+
+
+def launch_from_gecko(pool, chain):
+    """GeckoTerminal pool -> Launch, with its trading activity attached."""
+    if not chain:
+        return None
+    a = pool.get("attributes") or {}
+    base = (((pool.get("relationships") or {}).get("base_token") or {}).get("data") or {}).get("id", "")
+    token = base.split("_", 1)[1] if "_" in base else ""
+    if not token:
+        return None
+    tx_h1 = (a.get("transactions") or {}).get("h1") or {}
+    name = (a.get("name") or "").split(" / ")[0]
+    return Launch(
+        mint=token, source="geckoterminal", chain=chain, name=name, symbol=name,
+        pair=a.get("address", ""),
+        liquidity_usd=float(a.get("reserve_in_usd") or 0),
+        activity={"buys_h1": tx_h1.get("buys"), "sells_h1": tx_h1.get("sells"),
+                  "buyers_h1": tx_h1.get("buyers"), "sellers_h1": tx_h1.get("sellers"),
+                  "volume_h1_usd": float(((a.get("volume_usd") or {}).get("h1")) or 0),
+                  "price_change_h1_pct": float(((a.get("price_change_percentage") or {}).get("h1")) or 0),
+                  "pool_created_at": a.get("pool_created_at")})
 
 
 async def fetch_metadata(client, uri):

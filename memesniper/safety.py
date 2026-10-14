@@ -5,7 +5,7 @@ obvious garbage. Warnings and metrics are handed to Claude as context.
 import asyncio
 import logging
 
-from .config import LAMPORTS_PER_SOL
+from .evm_safety import check_gas, check_goplus, check_honeypot_sim
 
 log = logging.getLogger("memesniper")
 
@@ -77,17 +77,17 @@ def check_rugcheck(report, summary, settings):
             report.warnings.append(f"rugcheck danger: {r.get('name')}")
 
 
-def check_roundtrip(report, buy_q, sell_q, size_sol, settings):
+def check_roundtrip(report, buy_q, sell_q, size_native, settings, native_decimals=9):
     """A buy route plus a sell route back is the honeypot test: if we can't sell, we don't buy."""
     if not buy_q:
-        report.fail("no buy route on Jupiter")
+        report.fail("no buy route")
         return
-    report.ref_quote = (size_sol, int(buy_q["outAmount"]))
+    report.ref_quote = (size_native, int(buy_q["outAmount"]))
     if not sell_q:
-        report.fail("no sell route on Jupiter (possible honeypot)")
+        report.fail("no sell route (possible honeypot)")
         return
-    back = int(sell_q["outAmount"]) / LAMPORTS_PER_SOL
-    loss = (1 - back / size_sol) * 100
+    back = int(sell_q["outAmount"]) / 10 ** native_decimals
+    loss = (1 - back / size_native) * 100
     report.metrics["roundtrip_loss_pct"] = round(loss, 2)
     report.metrics["buy_price_impact_pct"] = round(float(buy_q.get("priceImpactPct") or 0) * 100, 2)
     if loss > settings.max_roundtrip_loss_pct:
@@ -119,7 +119,8 @@ def check_pair(report, pair, launch, settings):
             report.warnings.append("no DexScreener pair yet")
         return
     report.metrics["pair"] = pair
-    if launch.source != "pumpportal" and pair["liquidity_usd"] < settings.min_liquidity_usd:
+    on_curve = launch.source == "pumpportal" or pair.get("dex") == "pumpfun"
+    if not on_curve and pair["liquidity_usd"] < settings.min_liquidity_usd:
         report.fail(f"liquidity ${pair['liquidity_usd']:,.0f} < ${settings.min_liquidity_usd:,.0f}")
 
 
@@ -130,18 +131,36 @@ def check_name(report, launch, settings):
             report.fail(f"name matches blocked word '{w}'")
 
 
-async def screen(launch, settings, rpc, jupiter, rugcheck, dexscreener, observation=None,
-                 creators=None):
-    """Run every check concurrently and return a SafetyReport."""
+def check_activity(report, launch, settings):
+    """Pool trading activity from GeckoTerminal (non-pump.fun launches)."""
+    act = launch.activity
+    if not act:
+        return
+    report.metrics["pool_activity"] = act
+    buyers = act.get("buyers_h1")
+    if buyers is not None and buyers < settings.min_unique_buyers:
+        report.fail(f"only {buyers} unique buyers in the last hour (min {settings.min_unique_buyers})")
+
+
+async def screen(launch, settings, ctx, dexscreener, observation=None, creators=None,
+                 trade_native=None, trade_usd=None):
+    """Run every check concurrently and return a SafetyReport.
+
+    ctx: the chain's ChainCtx (router, rpc, chain-specific checkers).
+    trade_native / trade_usd: the size the round-trip test should use."""
     from .creator import check_creator_local, check_creator_remote
     from .models import SafetyReport
     report = SafetyReport(mint=launch.mint)
     check_name(report, launch, settings)
     check_observation(report, observation, settings)
+    check_activity(report, launch, settings)
     if creators is not None and launch.creator:
         check_creator_local(report, creators.local(launch.creator, launch.mint), settings)
     if not report.passed:
         return report   # cheap fails first: skip the network calls
+    if not trade_native:
+        report.fail(f"no {launch.chain} price: can't size the safety round trip")
+        return report
 
     async def safe(coro):
         try:
@@ -150,24 +169,38 @@ async def screen(launch, settings, rpc, jupiter, rugcheck, dexscreener, observat
             log.debug("safety call failed for %s: %s", launch.mint, e)
             return None
 
-    size = settings.max_sol_per_trade
     async def nothing():
         return None
 
-    creator_remote = (creators.remote(launch.creator, launch.mint)
-                      if creators is not None and launch.creator else nothing())
-    mint_info, holders, rug, buy_q, pair, remote = await asyncio.gather(
-        safe(rpc.mint_info(launch.mint)), safe(rpc.largest_holders(launch.mint)),
-        safe(rugcheck.summary(launch.mint)), safe(jupiter.buy_quote(launch.mint, size, settings.slippage_bps)),
-        safe(dexscreener.pair_info(launch.mint)), safe(creator_remote))
+    router, spec = ctx.router, ctx.spec
+    pair_task = safe(dexscreener.pair_info(launch.mint, launch.chain))
+    buy_task = safe(router.buy_quote(launch.mint, trade_native, settings.slippage_bps))
+
+    if spec.is_evm:
+        goplus, sim, buy_q, pair = await asyncio.gather(
+            safe(ctx.goplus.token(spec.evm_chain_id, launch.mint)),
+            safe(ctx.honeypot.check(spec.evm_chain_id, launch.mint)), buy_task, pair_task)
+        check_goplus(report, goplus, settings)
+        check_honeypot_sim(report, sim, settings)
+        check_gas(report, buy_q, trade_usd, settings)
+        if not launch.creator and report.metrics.get("creator") and creators is not None:
+            launch.creator = report.metrics["creator"]
+            check_creator_local(report, creators.local(launch.creator, launch.mint), settings)
+        remote = None
+    else:
+        creator_remote = (creators.remote(launch.creator, launch.mint)
+                          if creators is not None and launch.creator else nothing())
+        mint_info, holders, rug, buy_q, pair, remote = await asyncio.gather(
+            safe(ctx.rpc.mint_info(launch.mint)), safe(ctx.rpc.largest_holders(launch.mint)),
+            safe(ctx.rugcheck.summary(launch.mint)), buy_task, pair_task, safe(creator_remote))
+        check_mint(report, mint_info, settings)
+        check_holders(report, holders, launch, settings)
+        check_rugcheck(report, rug, settings)
+
     sell_q = None
     if buy_q:
-        sell_q = await safe(jupiter.sell_quote(launch.mint, int(buy_q["outAmount"]), settings.slippage_bps))
-
-    check_mint(report, mint_info, settings)
-    check_holders(report, holders, launch, settings)
-    check_rugcheck(report, rug, settings)
-    check_roundtrip(report, buy_q, sell_q, size, settings)
+        sell_q = await safe(router.sell_quote(launch.mint, int(buy_q["outAmount"]), settings.slippage_bps))
+    check_roundtrip(report, buy_q, sell_q, trade_native, settings, spec.native_decimals)
     check_pair(report, pair, launch, settings)
     if remote:
         check_creator_remote(report, remote, settings)

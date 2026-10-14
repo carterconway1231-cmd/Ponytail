@@ -1,4 +1,4 @@
-"""CLI: python -m memesniper {run,status,check,journal,stop,resume}"""
+"""CLI: python -m memesniper {run,status,journal,outcomes,creator,check,wallet,test-alert,stop,resume}"""
 import argparse
 import asyncio
 import json
@@ -12,32 +12,58 @@ from .config import load_settings
 
 def build(settings):
     from .agent import EntryAgent
+    from .chains import ChainCtx, spec
+    from .creator import CreatorProfiler
     from .engine import Sniper
+    from .evm import EvmLiveExecutor, EvmPaperExecutor, EvmRpc, KyberRouter
+    from .evm_safety import GoPlus, HoneypotIs
     from .executor import LiveExecutor, PaperExecutor
-    from .feeds import DexScreenerFeed, PumpPortalHub
+    from .feeds import DexScreenerFeed, GeckoTerminalFeed, PumpPortalHub
     from .jupiter import Jupiter
     from .net import SolanaRpc, make_client
-    from .creator import CreatorProfiler
     from .notify import Notifier
     from .outcomes import OutcomeTracker
+    from .prices import NativePrices
     from .risk import RiskManager
     from .safety import RugCheck
     from .state import State
+    from .watchlist import Watchlist
 
     http = make_client()
     state = State(settings.state_path)
-    rpc = SolanaRpc(http, settings.rpc_url)
-    jup = Jupiter(http, settings.jupiter_url, settings.jupiter_api_key)
-    dex = DexScreenerFeed(http, settings.dexscreener_url, settings.dexscreener_poll_s)
-    hub = PumpPortalHub(settings.pumpportal_ws) if "pumpportal" in settings.sources else None
-    executor = LiveExecutor(settings, jup, rpc) if settings.live else PaperExecutor(settings, jup)
-    sniper = Sniper(settings, state=state, risk=RiskManager(settings, state), rpc=rpc, jupiter=jup,
-                    rugcheck=RugCheck(http, settings.rugcheck_url), dexscreener=dex,
-                    agent=EntryAgent(settings), executor=executor, hub=hub, http=http,
+    prices = NativePrices(http, settings.dexscreener_url)
+    dex = DexScreenerFeed(http, settings.dexscreener_url, settings.dexscreener_poll_s, settings.chains)
+    goplus, honeypot = GoPlus(http, settings.goplus_url), HoneypotIs(http, settings.honeypot_url)
+
+    chains, sol_rpc = {}, SolanaRpc(http, settings.rpc_for("solana"))
+    for name in settings.chains:
+        cs = spec(name)
+        if cs.is_evm:
+            router = KyberRouter(http, cs, settings.kyberswap_url)
+            rpc = EvmRpc(http, settings.rpc_for(name))
+            ex = (EvmLiveExecutor(settings, router, rpc, settings.evm_private_key) if settings.live
+                  else EvmPaperExecutor(settings, router, prices))
+            chains[name] = ChainCtx(cs, router, ex, rpc=rpc, goplus=goplus, honeypot=honeypot)
+        else:
+            router = Jupiter(http, settings.jupiter_url, settings.jupiter_api_key)
+            ex = LiveExecutor(settings, router, sol_rpc) if settings.live else PaperExecutor(settings, router)
+            chains[name] = ChainCtx(cs, router, ex, rpc=sol_rpc,
+                                    rugcheck=RugCheck(http, settings.rugcheck_url))
+
+    hub = (PumpPortalHub(settings.pumpportal_ws)
+           if "pumpportal" in settings.sources and "solana" in chains else None)
+    sniper = Sniper(settings, state=state, risk=RiskManager(settings, state), chains=chains,
+                    dexscreener=dex, agent=EntryAgent(settings), prices=prices, hub=hub, http=http,
                     notifier=Notifier(settings, http),
-                    creators=CreatorProfiler(settings, state, rpc, http),
-                    outcomes=OutcomeTracker(settings, state, jup))
-    feeds = [f for f in (hub, dex if "dexscreener" in settings.sources else None) if f]
+                    creators=CreatorProfiler(settings, state, sol_rpc, http),
+                    outcomes=OutcomeTracker(settings, state, {c: x.router for c, x in chains.items()}, prices),
+                    watchlist=Watchlist(settings, state, dex))
+    feeds = [hub] if hub else []
+    if "dexscreener" in settings.sources:
+        feeds.append(dex)
+    if "geckoterminal" in settings.sources:
+        feeds.append(GeckoTerminalFeed(http, settings.geckoterminal_url, settings.geckoterminal_poll_s,
+                                       settings.chains))
     return sniper, feeds
 
 
@@ -47,12 +73,14 @@ def cmd_run(args):
     if s.live:
         if os.environ.get("MEMESNIPER_MODE") != "live" or not args.live:
             sys.exit("live trading needs BOTH MEMESNIPER_MODE=live and --live")
-        print(f"LIVE MODE: up to {s.max_sol_per_trade} SOL/trade, {s.max_daily_spend_sol} SOL/day, "
-              f"{s.max_daily_loss_sol} SOL daily loss limit. Ctrl-C now to abort.", file=sys.stderr)
+        print(f"LIVE MODE on {', '.join(s.chains)}: up to ${s.max_usd_per_trade:.0f}/trade, "
+              f"${s.max_daily_spend_usd:.0f}/day, ${s.max_daily_loss_usd:.0f} daily loss limit. "
+              "Ctrl-C now to abort.", file=sys.stderr)
         time.sleep(5)
     sniper, feeds = build(s)
     logging.getLogger("memesniper").info(
-        "memesniper %s | sources=%s | model=%s effort=%s", s.mode, ",".join(s.sources), s.model, s.effort)
+        "memesniper %s | chains=%s | strategies=%s | sources=%s | model=%s effort=%s", s.mode,
+        ",".join(s.chains), ",".join(s.strategies), ",".join(s.sources), s.model, s.effort)
     try:
         asyncio.run(sniper.run(feeds))
     except KeyboardInterrupt:
@@ -68,12 +96,13 @@ def cmd_status(args):
         "mode": s.mode,
         "halted": RiskManager(s, st).halted(),
         "open_positions": [p.to_dict() for p in st.open_positions()],
-        "today": {"spent_sol": round(st.spent_today(), 4),
-                  "realized_pnl_sol": round(st.realized_pnl_today(), 4),
+        "today": {"spent_usd": round(st.spent_today(), 2),
+                  "realized_pnl_usd": round(st.realized_pnl_today(), 2),
                   "claude_usd": round(st.claude_spend_today(), 4),
                   "decisions": st.decision_stats(day_start())},
-        "recent_closed": [{k: r[k] for k in ("symbol", "entry_sol", "realized_sol", "exit_reason")}
-                          for r in st.closed_positions(10)],
+        "recent_closed": [{k: r[k] for k in ("symbol", "chain", "strategy", "entry_usd", "realized_usd",
+                                             "exit_reason")} for r in st.closed_positions(10)],
+        "watchlist_size": len(st.watched()),
     }
     print(json.dumps(out, indent=2, default=str))
 
@@ -81,12 +110,13 @@ def cmd_status(args):
 def cmd_journal(args):
     from .state import State
     st = State(load_settings().state_path)
-    rows = st.db.execute("SELECT ts, symbol, mint, action, confidence, size_sol, reasoning, "
-                         "executed FROM decisions ORDER BY id DESC LIMIT ?", (args.n,)).fetchall()
+    rows = st.db.execute("SELECT ts, symbol, mint, chain, strategy, action, confidence, size_usd, "
+                         "reasoning, executed FROM decisions ORDER BY id DESC LIMIT ?", (args.n,)).fetchall()
     for r in rows:
         when = time.strftime("%m-%d %H:%M:%S", time.localtime(r["ts"]))
-        print(f"{when} {r['action']:6} {r['symbol'] or r['mint'][:8]:12} c={r['confidence']:.2f} "
-              f"size={r['size_sol']:.3f}{' EXEC' if r['executed'] else ''} | {r['reasoning'][:140]}")
+        print(f"{when} {r['chain'][:4]:4} {r['strategy'][:8]:8} {r['action']:6} "
+              f"{r['symbol'] or r['mint'][:8]:12} c={r['confidence']:.2f} ${r['size_usd'] or 0:6.2f}"
+              f"{' EXEC' if r['executed'] else ''} | {(r['reasoning'] or '')[:130]}")
 
 
 def cmd_check(args):
@@ -96,9 +126,10 @@ def cmd_check(args):
 
     async def go():
         sniper, _ = build(s)
-        from .safety import screen
-        launch = Launch(mint=args.mint, source="manual")
-        report = await screen(launch, s, sniper.rpc, sniper.jup, sniper.rugcheck, sniper.dex)
+        if args.chain not in sniper.chains:
+            sys.exit(f"chain {args.chain} is not enabled (MEMESNIPER_CHAINS)")
+        launch = Launch(mint=args.mint, source="manual", chain=args.chain)
+        report = await sniper._screen(launch)
         out = {"passed": report.passed, "hard_fails": report.hard_fails,
                "warnings": report.warnings, "metrics": report.metrics}
         if args.ask and report.passed:
@@ -150,20 +181,37 @@ def cmd_test_alert(args):
 
 
 def cmd_wallet(args):
-    """Show which wallet the bot trades from, so you can match it to the FOMO app."""
-    s = load_settings()
-    if not s.private_key:
-        sys.exit("no MEMESNIPER_PRIVATE_KEY set (paper mode needs none)")
-    from solders.keypair import Keypair
+    """Show which wallets the bot trades from, so you can match them to the FOMO app."""
+    from .chains import spec
+    from .evm import EvmRpc
     from .net import SolanaRpc, make_client
-    pubkey = str(Keypair.from_base58_string(s.private_key).pubkey())
-    print(f"address: {pubkey}")
+    s = load_settings()
+    if not s.private_key and not s.evm_private_key:
+        sys.exit("no MEMESNIPER_PRIVATE_KEY or MEMESNIPER_EVM_PRIVATE_KEY set (paper mode needs none)")
 
     async def go():
-        try:
-            print(f"balance: {await SolanaRpc(make_client(), s.rpc_url).balance_sol(pubkey):.4f} SOL")
-        except Exception as e:
-            print(f"balance: unavailable ({e})")
+        http = make_client()
+        if s.private_key:
+            from solders.keypair import Keypair
+            pubkey = str(Keypair.from_base58_string(s.private_key).pubkey())
+            print(f"solana address: {pubkey}")
+            try:
+                print(f"  balance: {await SolanaRpc(http, s.rpc_for('solana')).balance_sol(pubkey):.4f} SOL")
+            except Exception as e:
+                print(f"  balance: unavailable ({e})")
+        if s.evm_private_key:
+            from eth_account import Account
+            addr = Account.from_key(s.evm_private_key).address
+            print(f"evm address (Base, BSC, Ethereum): {addr}")
+            for name in s.chains:
+                cs = spec(name)
+                if not cs.is_evm:
+                    continue
+                try:
+                    bal = await EvmRpc(http, s.rpc_for(name)).balance(addr) / 10 ** cs.native_decimals
+                    print(f"  {name}: {bal:.5f} {cs.native}")
+                except Exception as e:
+                    print(f"  {name}: unavailable ({e})")
     asyncio.run(go())
 
 
@@ -192,7 +240,8 @@ def main(argv=None):
     j.add_argument("-n", type=int, default=30)
     j.set_defaults(fn=cmd_journal)
     c = sub.add_parser("check", help="safety-screen one mint")
-    c.add_argument("mint")
+    c.add_argument("mint", help="token address")
+    c.add_argument("--chain", default="solana", help="solana | base | bsc | ethereum")
     c.add_argument("--ask", action="store_true", help="also ask Claude (costs one API call)")
     c.set_defaults(fn=cmd_check)
     o = sub.add_parser("outcomes", help="how tokens did after each decision (tuning data)")

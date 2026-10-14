@@ -1,8 +1,8 @@
 """Outcome tracker: what happened to every token after the bot decided on it.
 
-For each tracked token we keep a reference quote (what max_sol_per_trade bought at decision
+For each tracked token we keep a reference quote (what max_usd_per_trade bought at decision
 time) and re-quote selling those same tokens at 5m, 15m, 1h and 4h. The ratio
-value_now / ref_sol answers the questions that tuning depends on:
+value_now / ref_native answers the questions that tuning depends on:
 - do the safety checks reject tokens that went on to pump? (filter too strict)
 - do Claude's BUYs beat its SKIPs? (is Claude adding value)
 - are exits leaving money on the table, or holding losers too long?
@@ -17,7 +17,6 @@ import re
 import statistics
 import time
 
-from .config import LAMPORTS_PER_SOL
 
 log = logging.getLogger("memesniper")
 
@@ -47,8 +46,9 @@ def fail_category(reason):
 
 
 class OutcomeTracker:
-    def __init__(self, settings, state, jupiter, rng=random.random):
-        self.s, self.state, self.jup, self.rng = settings, state, jupiter, rng
+    def __init__(self, settings, state, routers, prices, rng=random.random):
+        """routers: chain -> Jupiter/KyberRouter; prices: NativePrices."""
+        self.s, self.state, self.routers, self.prices, self.rng = settings, state, routers, prices, rng
         self._started = []          # timestamps of newly tracked tokens, for the hourly cap
 
     def wants(self, verdict):
@@ -60,20 +60,24 @@ class OutcomeTracker:
             return False
         return verdict != "REJECT" or self.rng() < self.s.outcome_sample_rejects
 
-    async def track(self, launch, report, verdict):
+    async def track(self, launch, report, verdict, strategy="launch"):
         """Start tracking; call after the decision is journaled. Never raises."""
         try:
-            if not self.wants(verdict):
+            if launch.chain not in self.routers or not self.wants(verdict):
                 return False
             ref = report.ref_quote
             if ref is None:
-                q = await self.jup.buy_quote(launch.mint, self.s.max_sol_per_trade, self.s.slippage_bps)
+                usd = await self.prices.usd(launch.chain)
+                if not usd:
+                    return False
+                size = self.s.max_usd_per_trade / usd
+                q = await self.routers[launch.chain].buy_quote(launch.mint, size, self.s.slippage_bps)
                 if not q:
                     return False     # untradeable: nothing to measure against
-                ref = (self.s.max_sol_per_trade, int(q["outAmount"]))
+                ref = (size, int(q["outAmount"]))
             reason = fail_category(report.hard_fails[0]) if report.hard_fails else ""
             self._started.append(time.time())
-            self.state.start_outcome(launch, verdict, reason, ref[0], ref[1])
+            self.state.start_outcome(launch, verdict, reason, ref[0], ref[1], strategy)
             return True
         except Exception as e:
             log.debug("outcome tracking failed for %s: %s", launch.mint, e)
@@ -84,6 +88,9 @@ class OutcomeTracker:
         now = now or time.time()
         quotes = 0
         for row in self.state.pending_outcomes():
+            router = self.routers.get(row["chain"])
+            if router is None:
+                continue
             age = now - row["ts"]
             updates = {}
             for col, secs in HORIZONS:
@@ -94,10 +101,12 @@ class OutcomeTracker:
                     continue
                 if quotes >= limit:
                     break
-                q = await self.jup.sell_quote(row["mint"], int(row["ref_tokens"]), self.s.slippage_bps)
+                token = row["token"] or row["mint"]
+                q = await router.sell_quote(token, int(row["ref_tokens"]), self.s.slippage_bps)
                 quotes += 1
                 # No route after we had one usually means the liquidity was pulled.
-                updates[col] = int(q["outAmount"]) / LAMPORTS_PER_SOL / row["ref_sol"] if q else 0.0
+                back = int(q["outAmount"]) / 10 ** router.spec.native_decimals if q else 0.0
+                updates[col] = back / row["ref_sol"]
             done = age > HORIZONS[-1][1] + GRACE_S or (
                 all(row[c] is not None or c in updates for c, _ in HORIZONS))
             if updates or done:
@@ -139,9 +148,13 @@ def group_stats(rows):
 
 
 def build_report(rows):
-    by_verdict, by_reason = {}, {}
+    by_verdict, by_reason, by_strategy, by_chain = {}, {}, {}, {}
     for r in rows:
         by_verdict.setdefault(r["verdict"], []).append(r)
+        keys = r.keys()
+        if r["verdict"] == "BUY":
+            by_strategy.setdefault(r["strategy"] if "strategy" in keys else "launch", []).append(r)
+            by_chain.setdefault(r["chain"] if "chain" in keys else "solana", []).append(r)
         if r["verdict"] == "REJECT":
             by_reason.setdefault(r["reason"] or "other", []).append(r)
     return {
@@ -149,6 +162,8 @@ def build_report(rows):
         "by_verdict": {k: group_stats(v) for k, v in sorted(by_verdict.items())},
         "rejects_by_reason": {k: group_stats(v) for k, v in
                               sorted(by_reason.items(), key=lambda kv: -len(kv[1]))},
+        "buys_by_strategy": {k: group_stats(v) for k, v in sorted(by_strategy.items())},
+        "buys_by_chain": {k: group_stats(v) for k, v in sorted(by_chain.items())},
     }
 
 
@@ -166,6 +181,9 @@ def format_report(rep):
     out = [f"tracked tokens: {rep['tracked']}  (median value vs. entry; >=2x = peak at any checkpoint)",
            "", "BY DECISION", head]
     out += [line(k, g) for k, g in rep["by_verdict"].items()]
+    for title, key in (("BUYS BY STRATEGY", "buys_by_strategy"), ("BUYS BY CHAIN", "buys_by_chain")):
+        if rep.get(key):
+            out += ["", title, head] + [line(k, g) for k, g in rep[key].items()]
     if rep["rejects_by_reason"]:
         out += ["", "REJECTIONS BY FIRST FAILED CHECK (a high >=2x rate means the check rejects winners)",
                 head]

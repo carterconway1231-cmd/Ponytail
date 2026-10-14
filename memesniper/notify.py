@@ -59,5 +59,5 @@ class Notifier:
         self._last_halt = None
 
 
-def dexscreener_link(mint):
-    return f"https://dexscreener.com/solana/{mint}"
+def dexscreener_link(chain, mint):
+    return f"https://dexscreener.com/{chain}/{mint}"

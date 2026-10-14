@@ -29,7 +29,7 @@ class PaperExecutor:
     def _fee_sol(self):
         return (self.s.priority_fee_lamports + BASE_FEE_LAMPORTS) / LAMPORTS_PER_SOL
 
-    async def wallet_sol(self):
+    async def wallet_native(self):
         return None     # paper has no wallet cap; risk caps still apply
 
     async def held_tokens(self, mint):
@@ -60,7 +60,7 @@ class LiveExecutor:
         self.keypair = Keypair.from_base58_string(settings.private_key)
         self.pubkey = str(self.keypair.pubkey())
 
-    async def wallet_sol(self):
+    async def wallet_native(self):
         return await self.rpc.balance_sol(self.pubkey)
 
     async def held_tokens(self, mint):
@@ -87,13 +87,13 @@ class LiveExecutor:
         q = await self.jup.buy_quote(mint, sol, self.s.slippage_bps)
         if not q:
             return None
-        before_sol = await self.wallet_sol()
+        before_sol = await self.wallet_native()
         before_tok = await self.rpc.token_balance_raw(self.pubkey, mint)
         sig = await self._send(q)
         if not sig:
             return None
         got = await self.rpc.token_balance_raw(self.pubkey, mint) - before_tok
-        spent = before_sol - await self.wallet_sol()
+        spent = before_sol - await self.wallet_native()
         return Fill(sol=spent, tokens=float(got), sig=sig)
 
     async def sell(self, mint, tokens):
@@ -104,8 +104,8 @@ class LiveExecutor:
         q = await self.jup.sell_quote(mint, amount, self.s.slippage_bps)
         if not q:
             return None
-        before_sol = await self.wallet_sol()
+        before_sol = await self.wallet_native()
         sig = await self._send(q)
         if not sig:
             return None
-        return Fill(sol=await self.wallet_sol() - before_sol, tokens=float(amount), sig=sig)
+        return Fill(sol=await self.wallet_native() - before_sol, tokens=float(amount), sig=sig)

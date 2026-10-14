@@ -14,6 +14,8 @@ log = logging.getLogger("memesniper")
 
 class Jupiter:
     def __init__(self, client, base_url, api_key=""):
+        from .chains import CHAINS
+        self.spec = CHAINS["solana"]
         self.client = client
         self.base = base_url.rstrip("/")
         self.headers = {"x-api-key": api_key} if api_key else None
@@ -36,6 +38,8 @@ class Jupiter:
         """What selling tokens_raw would return right now, in SOL (None if unroutable)."""
         q = await self.sell_quote(mint, tokens_raw, slippage_bps)
         return int(q["outAmount"]) / LAMPORTS_PER_SOL if q else None
+
+    value_native = value_sol
 
     async def swap_tx(self, quote, user_pubkey, priority_fee_lamports):
         """Unsigned base64 VersionedTransaction for the given quote."""

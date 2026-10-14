@@ -10,3 +10,4 @@ ta
 anthropic>=1.13
 solders>=0.29
 websockets>=13
+eth-account>=0.13
