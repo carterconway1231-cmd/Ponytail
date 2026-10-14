@@ -231,3 +231,12 @@ Entry template:
 - Momentum: AAPL, ADBE, JPM, LLY, HON and MRK are not standouts → gate 1 FAIL.
 - Options: AVGO spread max loss exceeds the $14.71 cap; credit spread exceeds buying power → stock.
 - Entries today: 2 of 3. Positions: 1 of 2.
+
+### 13:47 ET cycle
+- Reconcile: AVGO 0.040308 sh @ 347.33 (Robinhood) matches the ledger.
+- Stops: AVGO $346.09 vs stop $345.68 → HOLD per `$B check` (−0.75R unrealized, just above the 0.25R near-stop band). Daily P&L −$0.18 incl. unrealized.
+- Tape: SPY −1.25%, QQQ −1.97%, IWM −2.1%. SMH −3.65% (selloff still deepening), XLK −2.9%; XLV +2.2%, XLP +1.6%. No stabilization yet.
+- Mean reversion (looser tier): same names as 12:47, deeper. ORCL/BAC company-specific; AMD stopped today; CAT/META/TSLA/GS/MU fail as before. NVDA still passes all gates; skipped again for concentration (AVGO already held, same theme).
+- Momentum: ADBE, AAPL, HON, MCD, MRK, JPM, ABBV and LLY are not standouts → FAIL.
+- Options: none (no new signal; credit spread exceeds buying power).
+- Action: hold AVGO. No new entries. Entries 2 of 3; positions 1 of 2.
