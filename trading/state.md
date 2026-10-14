@@ -188,3 +188,21 @@ Entry template:
 - Momentum: AAPL, HON, GE, ADBE, LLY and JPM are not standouts → gate 1 FAIL.
 - Options: AMD debit spread max loss far exceeds the $14.71 cap → stock trade instead. SPY put credit spread exceeds buying power → skip.
 - Entries today: 1 of 3. Positions: 1 of 2.
+
+### 11:47 ET cycle: EXIT AMD (stop)
+- Stops first:
+  - AMD last $578.60 < stop $579.78 → EXIT_STOP. Review → market sell 0.024011 sh, filled @ $577.7101 (order 6acfa482).
+  - P&L −$0.13, −1.63R: the hourly check fired 2.07 below the stop, so the loss ran past the planned −1R.
+  - Score 48 (setup 30 / execution 18 / outcome 0).
+  - This was a same-day round trip: day trade #1 in the last 5 sessions.
+  - Lesson logged on the trade: a stop 0.56% under the day low is too tight for a name with a 3% daily range during a trending sector selloff, and hourly checks add slippage.
+- Account: equity $29.43 → ~$29.30. Daily P&L −$0.13 (limit $7.36). Flat. 1 of 3 entries used.
+- Tape: SPY −0.92%, QQQ −1.44%, IWM −1.60%. SMH −2.9% (selloff deepening), XLK −2.1%; XLV +2.0%, XLP +1.1%. Rotation out of tech into defensives.
+- Mean reversion (clean tier, ≤−3%):
+  - ORCL −7.02% and BAC −6.13%: company-specific → gate 1 FAIL.
+  - AMD −4.45%: stopped out this cycle; no same-day re-entry.
+  - META −3.01% (XLC −1.17%, hint external): gate 2 FAIL. Latest report Q2 2026 EPS $6.18 vs $7.18 est (a miss). Next report 10/21.
+  - CAT, AVGO, NVDA, MU and TSLA (−2.3% to −2.7%): above the −3% clean-tier threshold; eligible at 12:47 (looser tier).
+- Momentum: AAPL, ADBE, LLY, JPM and UNH are not standouts → gate 1 FAIL.
+- Options: no stock signal passed. Credit spread exceeds buying power.
+- Action: AMD exit only. No new entries.
