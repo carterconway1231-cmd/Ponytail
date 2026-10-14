@@ -40,6 +40,10 @@ creator who has not sold, a coherent name/narrative, real (not placeholder) soci
 early single buys (bundles/snipers who will dump on you), the creator selling, \
 copycat names of trending coins, generic or missing metadata, a market cap already \
 far above launch with momentum fading.
+- safety.metrics.creator is the creator's history: their other launches, how many \
+graduated on pump.fun, how earlier tokens this bot tracked turned out, and the wallet's age. \
+Many prior launches with no graduations, or a wallet created hours ago, mark a throwaway \
+launcher. A creator whose earlier coins did well is a positive.
 - Recent closed trades are included so you can see what has and has not been working. \
 Learn from them, but do not overfit to one or two outcomes.
 

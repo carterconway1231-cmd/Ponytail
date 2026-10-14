@@ -82,6 +82,7 @@ def check_roundtrip(report, buy_q, sell_q, size_sol, settings):
     if not buy_q:
         report.fail("no buy route on Jupiter")
         return
+    report.ref_quote = (size_sol, int(buy_q["outAmount"]))
     if not sell_q:
         report.fail("no sell route on Jupiter (possible honeypot)")
         return
@@ -129,12 +130,16 @@ def check_name(report, launch, settings):
             report.fail(f"name matches blocked word '{w}'")
 
 
-async def screen(launch, settings, rpc, jupiter, rugcheck, dexscreener, observation=None):
+async def screen(launch, settings, rpc, jupiter, rugcheck, dexscreener, observation=None,
+                 creators=None):
     """Run every check concurrently and return a SafetyReport."""
+    from .creator import check_creator_local, check_creator_remote
     from .models import SafetyReport
     report = SafetyReport(mint=launch.mint)
     check_name(report, launch, settings)
     check_observation(report, observation, settings)
+    if creators is not None and launch.creator:
+        check_creator_local(report, creators.local(launch.creator, launch.mint), settings)
     if not report.passed:
         return report   # cheap fails first: skip the network calls
 
@@ -146,10 +151,15 @@ async def screen(launch, settings, rpc, jupiter, rugcheck, dexscreener, observat
             return None
 
     size = settings.max_sol_per_trade
-    mint_info, holders, rug, buy_q, pair = await asyncio.gather(
+    async def nothing():
+        return None
+
+    creator_remote = (creators.remote(launch.creator, launch.mint)
+                      if creators is not None and launch.creator else nothing())
+    mint_info, holders, rug, buy_q, pair, remote = await asyncio.gather(
         safe(rpc.mint_info(launch.mint)), safe(rpc.largest_holders(launch.mint)),
         safe(rugcheck.summary(launch.mint)), safe(jupiter.buy_quote(launch.mint, size, settings.slippage_bps)),
-        safe(dexscreener.pair_info(launch.mint)))
+        safe(dexscreener.pair_info(launch.mint)), safe(creator_remote))
     sell_q = None
     if buy_q:
         sell_q = await safe(jupiter.sell_quote(launch.mint, int(buy_q["outAmount"]), settings.slippage_bps))
@@ -159,6 +169,8 @@ async def screen(launch, settings, rpc, jupiter, rugcheck, dexscreener, observat
     check_rugcheck(report, rug, settings)
     check_roundtrip(report, buy_q, sell_q, size, settings)
     check_pair(report, pair, launch, settings)
+    if remote:
+        check_creator_remote(report, remote, settings)
     return report
 
 

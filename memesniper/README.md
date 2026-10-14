@@ -25,7 +25,7 @@ shares no state with it. **Paper trading is the default.**
 | Stage | Owner | Rule (defaults) |
 |---|---|---|
 | Observation | code | Watches each new pump.fun token's trades for `OBSERVE_SECONDS` (30): distinct buyers, buy/sell SOL, largest buy, dev selling, market-cap change. |
-| Hard screen | code | Mint and freeze authority revoked. No Token-2022 fee/hook/delegate/pause extensions. Top-10 holders ≤ 35% (bonding curve and pool vaults excluded). Creator holds ≤ 10%. RugCheck score ≤ 5000. A Jupiter buy→sell round trip loses ≤ 12% (catches honeypots and sell taxes). ≥ 8 distinct buyers. Dev sold ≤ 50%. DEX pairs need ≥ $5k liquidity. Fails never reach Claude. |
+| Hard screen | code | Mint and freeze authority revoked. No Token-2022 fee/hook/delegate/pause extensions. Top-10 holders ≤ 35% (bonding curve and pool vaults excluded). Creator holds ≤ 10%. RugCheck score ≤ 5000. A Jupiter buy→sell round trip loses ≤ 12% (catches honeypots and sell taxes). ≥ 8 distinct buyers. Dev sold ≤ 50%. DEX pairs need ≥ $5k liquidity. Creator has no rug seen by this bot and ≤ 3 other launches in 24h. Fails never reach Claude. |
 | Entry | **Claude** | One structured-output call per candidate (`claude-opus-5-5`, effort `low`, 25s timeout). Sees token, metadata and socials, safety metrics and warnings, the observation, portfolio state and the last 10 closed trades. Returns BUY/SKIP, confidence, size, take-profit, stop and max hold. Timeouts, errors and refusals mean SKIP. Server-side refusal fallbacks are on (`MEMESNIPER_USE_FALLBACKS`). |
 | Risk | code | Confidence ≥ 0.6. Size ≤ 0.05 SOL/trade. ≤ 3 open positions. ≤ 0.15 SOL total exposure. ≤ 0.30 SOL spent per day. Daily loss limit 0.15 SOL (realized loss plus open positions marked at their stops). ≤ 6 entries/hour. One trade per creator per 24h. Wallet keeps 0.05 SOL in reserve. Claude can tighten stops and holds but never loosen them past config. |
 | Exits | code | Stop −30%. Time stop 60m. Sell half at +100%. Trailing stop 25% off the high, armed once up 25%. No sell route for 2 minutes means a write-off. |
@@ -41,6 +41,8 @@ python -m memesniper status                   # open positions, today's P&L, Cla
 python -m memesniper journal -n 50            # every decision, including rejections and Claude's reasoning
 python -m memesniper check <MINT> --ask       # screen one token and ask Claude, without trading
 python -m memesniper stop | resume            # kill switch for new entries (exits keep running)
+python -m memesniper outcomes --days 1        # how tokens did after each decision (tuning data)
+python -m memesniper creator <WALLET>         # a creator's launch history and wallet age
 python -m memesniper test-alert               # check phone alerts are wired up
 python -m memesniper wallet                   # which wallet the bot trades from (live)
 ```
@@ -58,6 +60,36 @@ metrics, so you can judge the filters and Claude's calls before risking anything
 4. Set `MEMESNIPER_MODE=live` and `MEMESNIPER_PRIVATE_KEY=<base58>` in `.env`, then run
    `python -m memesniper run --live`. Both are required. Live mode prints its caps and
    waits 5s before starting.
+
+## Outcome tracking: is any of this working?
+
+Every token Claude reviews, and a 10% sample of safety rejections, is tracked after the
+decision. The bot re-quotes the position it would have bought and records its value at 5m,
+15m, 1h and 4h. `python -m memesniper outcomes` (add `--days 1` for recent only) shows:
+
+- **By decision** (BUY / SKIP / BLOCKED / REJECT): median value vs. entry at each checkpoint,
+  the share that reached 2x, and the share that rugged. If SKIPs do as well as BUYs, Claude isn't
+  adding value. If BUYs fade from 15m to 1h, the exits hold too long.
+- **Rejections by the check that failed first**: a check whose rejects often hit 2x is
+  throwing away winners and should be loosened. One whose rejects mostly rug is earning its keep.
+
+A "no sell route" at a checkpoint counts as 0x (usually pulled liquidity). Checkpoints missed
+while the bot was off are left out, not guessed. Tune with `OUTCOME_SAMPLE_REJECTS` (0.1) and
+`OUTCOME_MAX_NEW_PER_HOUR` (300); each tracked token costs four Jupiter quotes.
+
+## Creator history
+
+Before anything else, each token's creator is checked against:
+- **what this bot has seen:** their other launches, and how earlier tokens it tracked turned
+  out. A creator whose earlier token fell >90% within an hour is rejected
+  (`CREATOR_MAX_PRIOR_RUGS`, 1). This needs no network and builds up as the bot runs.
+- **pump.fun's public API:** past coins and how many graduated. More than
+  `CREATOR_MAX_LAUNCHES_24H` (3) other launches in a day is rejected as a serial launcher.
+  This API is unofficial and may change; set `MEMESNIPER_PUMPFUN_API_URL=` to disable it.
+- **wallet age (RPC):** a wallet under 24h old is a warning for Claude, or a hard reject if you set
+  `CREATOR_MIN_WALLET_AGE_HOURS`.
+
+Claude sees the whole profile. `python -m memesniper creator <wallet>` shows it for any wallet.
 
 ## Connecting the FOMO app
 
@@ -119,6 +151,8 @@ limit pauses it. Set any of these in `.env`, then run `python -m memesniper test
 | `executor.py` | Paper and live (Jupiter + solders signing) execution |
 | `engine.py` | Orchestration, position monitor, wallet sync for manual (FOMO app) sells |
 | `notify.py` | Phone alerts: ntfy, Telegram, webhook |
+| `outcomes.py` | Tracks tokens after each decision; the `outcomes` report |
+| `creator.py` | Creator history: local launches/rugs, pump.fun history, wallet age |
 | `state.py` | SQLite journal |
 
 Tests: `python -m pytest tests/test_memesniper.py`. They run fully offline against fakes.

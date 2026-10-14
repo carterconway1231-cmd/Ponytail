@@ -476,3 +476,172 @@ def test_position_sold_in_fomo_app_is_closed_not_double_sold(settings, state):
     closed = state.closed_positions()[0]
     assert "outside the bot" in closed["exit_reason"]
     assert closed["realized_sol"] == pytest.approx(p.entry_sol * 0.97, rel=0.01)
+
+
+# --- creator history ----------------------------------------------------------------
+
+from memesniper import creator as creator_mod
+from memesniper import outcomes as outcomes_mod
+
+
+def test_pump_history_and_wallet_age_parsing():
+    now = 1_000_000.0
+    coins = [{"mint": MINT, "created_timestamp": now * 1000},                 # the token itself
+             {"mint": "a", "created_timestamp": (now - 3600) * 1000, "complete": False},
+             {"mint": "b", "created_timestamp": (now - 7200) * 1000, "complete": True},
+             {"mint": "c", "created_timestamp": (now - 3 * 86400) * 1000}]
+    assert creator_mod.summarize_pump_coins(coins, MINT, now) == {
+        "pump_launches": 3, "pump_launches_24h": 2, "pump_graduated": 1}
+    age, n, capped = creator_mod.wallet_age([{"blockTime": now - 100}, {"blockTime": now - 7200}], now)
+    assert (age, n, capped) == (2.0, 2, False)
+    assert creator_mod.wallet_age([], now) == (None, 0, False)
+
+
+def test_creator_stats_count_launches_and_prior_rugs(settings, state):
+    now = time.time()
+    for i, ts in enumerate((now - 60, now - 3600, now - 3 * 86400)):
+        state.record_launch(Launch(mint=f"old{i}", source="pumpportal", creator=CREATOR, seen_at=ts))
+    state.record_launch(Launch(mint=MINT, source="pumpportal", creator=CREATOR, seen_at=now))
+    state.start_outcome(Launch(mint="old0", source="pumpportal", creator=CREATOR), "REJECT", "", 0.05, 1e6)
+    state.update_outcome("old0", {"r5m": 1.4, "r15m": 0.05}, False)          # rugged inside an hour
+    stats = state.creator_stats(CREATOR, MINT)
+    assert stats == {"launches_seen": 3, "launches_24h": 2, "prior_tracked": 1, "prior_rugs": 1,
+                     "best_prior_x": 1.4}
+    assert state.creator_stats("", MINT)["launches_seen"] == 0
+
+
+def test_creator_checks_fail_repeat_ruggers_and_serial_launchers(settings):
+    r = SafetyReport(MINT)
+    creator_mod.check_creator_local(r, {"launches_seen": 9, "launches_24h": 5, "prior_tracked": 2,
+                                        "prior_rugs": 1, "best_prior_x": 0.4}, settings)
+    assert len(r.hard_fails) == 2 and r.metrics["creator"]["prior_rugs"] == 1
+
+    r = SafetyReport(MINT)
+    creator_mod.check_creator_remote(r, {"pump_launches": 7, "pump_launches_24h": 1, "pump_graduated": 0,
+                                         "wallet_age_hours": 5.0, "wallet_tx_count": 12}, settings)
+    assert r.passed and len(r.warnings) == 2               # never graduated + fresh wallet
+    strict = Settings(**{**settings.__dict__, "creator_min_wallet_age_hours": 24})
+    r = SafetyReport(MINT)
+    creator_mod.check_creator_remote(r, {"wallet_age_hours": 5.0, "wallet_tx_count": 12}, strict)
+    assert not r.passed
+    r = SafetyReport(MINT)                                  # old, busy wallet: 1000+ txs, no warning
+    creator_mod.check_creator_remote(r, {"wallet_age_hours": 5.0, "wallet_tx_count": "1000+"}, strict)
+    assert r.passed and not r.warnings
+
+
+class FakeCreators:
+    def __init__(self, local, remote=None):
+        self._local, self._remote, self.remote_calls = local, remote or {}, 0
+
+    def local(self, creator, mint):
+        return self._local
+
+    async def remote(self, creator, mint):
+        self.remote_calls += 1
+        return self._remote
+
+
+CLEAN_CREATOR = {"launches_seen": 0, "launches_24h": 0, "prior_tracked": 0, "prior_rugs": 0,
+                 "best_prior_x": None}
+
+
+def test_screen_rejects_known_rugger_before_any_network_call(settings):
+    fc = FakeCreators({**CLEAN_CREATOR, "prior_rugs": 2})
+    r = run(screen(pump_launch(), settings, None, None, None, None, good_obs(), creators=fc))
+    assert not r.passed and "rugged before" in r.hard_fails[0] and fc.remote_calls == 0
+
+    fc = FakeCreators(CLEAN_CREATOR, {"pump_launches": 2, "pump_launches_24h": 0, "pump_graduated": 1})
+    r = run(screen(pump_launch(), settings, FakeRpc(), FakeJupiter(), FakeRugcheck(), FakeDex(),
+                   good_obs(), creators=fc))
+    assert r.passed and r.metrics["creator"]["pump_graduated"] == 1 and r.ref_quote[0] == 0.05
+
+
+# --- outcome tracking ---------------------------------------------------------------
+
+def test_fail_categories():
+    assert outcomes_mod.fail_category("top-10 wallets hold 40.1% (max 35%)") == "holder concentration"
+    assert outcomes_mod.fail_category("only 3 unique buyers in 30s (min 8)") == "too few buyers"
+    assert outcomes_mod.fail_category("no sell route on Jupiter (possible honeypot)") == "no sell route"
+    assert outcomes_mod.fail_category("serial launcher: 5 other launches") == "serial launcher"
+
+
+def test_tracker_samples_rejects_but_always_tracks_claude_decisions(settings, state):
+    jup = FakeJupiter()
+    t = outcomes_mod.OutcomeTracker(settings, state, jup, rng=lambda: 0.5)    # 0.5 > 0.1 sample rate
+    rep = SafetyReport(MINT, passed=False, hard_fails=["only 2 unique buyers in 30s (min 3)"])
+    assert run(t.track(pump_launch(), rep, "REJECT")) is False
+    assert run(t.track(pump_launch(), rep, "SKIP")) is True                   # quotes its own ref
+    row = state.pending_outcomes()[0]
+    assert row["verdict"] == "SKIP" and row["reason"] == "too few buyers"
+    assert row["ref_tokens"] == pytest.approx(0.05 / 1e-6)
+
+    capped = outcomes_mod.OutcomeTracker(
+        Settings(**{**settings.__dict__, "outcome_max_new_per_hour": 0}), state, jup)
+    assert run(capped.track(pump_launch(), rep, "BUY")) is False
+
+
+def test_checkpoints_fill_on_schedule_and_mark_rugs_and_gaps(settings, state):
+    jup = FakeJupiter(sell_haircut=0.0)
+    t = outcomes_mod.OutcomeTracker(settings, state, jup)
+    rep = SafetyReport(MINT, ref_quote=(0.05, 50_000))
+    run(t.track(pump_launch(), rep, "BUY"))
+    t0 = state.pending_outcomes()[0]["ts"]
+
+    jup.price[MINT] = 3e-6                                  # 3x at 5 minutes
+    assert run(t.check_due(now=t0 + 301)) == 1
+    assert run(t.check_due(now=t0 + 302)) == 0              # nothing new due
+    jup.routable = False                                    # liquidity pulled by 15m
+    run(t.check_due(now=t0 + 901))
+    row = state.pending_outcomes()[0]
+    assert row["r5m"] == pytest.approx(3.0) and row["r15m"] == 0.0
+
+    run(t.check_due(now=t0 + 14400 + outcomes_mod.GRACE_S + 1))   # bot was down: gaps marked -1
+    assert state.pending_outcomes() == []
+    done = state.outcome_rows()[0]
+    assert (done["r1h"], done["r4h"], done["done"]) == (-1.0, -1.0, 1)
+
+
+def test_report_shows_winners_and_rugs_by_group():
+    def row(verdict, reason, *xs):
+        return {"verdict": verdict, "reason": reason, **dict(zip(("r5m", "r15m", "r1h", "r4h"), xs))}
+    rows = [row("BUY", "", 1.2, 2.5, 1.8, 1.1), row("BUY", "", 0.9, 0.5, 0.05, 0.0),
+            row("SKIP", "", 1.0, 1.0, 1.0, None),
+            row("REJECT", "too few buyers", 1.5, 3.0, 4.0, 2.0),
+            row("REJECT", "too few buyers", 0.8, 0.2, -1.0, -1.0)]
+    rep = outcomes_mod.build_report(rows)
+    buy = rep["by_verdict"]["BUY"]
+    assert buy["n"] == 2 and buy["pct_hit_2x"] == 50.0 and buy["pct_rugged"] == 50.0
+    assert buy["r1h"]["median_x"] == pytest.approx(0.925)
+    few = rep["rejects_by_reason"]["too few buyers"]
+    assert few["pct_hit_2x"] == 50.0 and few["r1h"]["n"] == 1     # -1 gaps excluded
+    text = outcomes_mod.format_report(rep)
+    assert "REJECTIONS BY FIRST FAILED CHECK" in text and "too few buyers" in text
+
+
+def test_engine_records_launches_and_tracks_every_decision(settings, state):
+    sniper, _, _ = make_sniper(settings, state, BUY)
+    sniper.creators = FakeCreators(CLEAN_CREATOR)
+    sniper.outcomes = outcomes_mod.OutcomeTracker(settings, state, sniper.jup, rng=lambda: 0.0)
+
+    async def go():
+        await sniper.handle(pump_launch())
+        thin = Launch(mint="thin", source="pumpportal", creator="someone")
+        sniper.hub = FakeHub(Observation(seconds=30, unique_buyers=1))
+        sniper.jup.price["thin"] = 1e-6
+        await sniper.handle(thin)
+        await asyncio.gather(*list(sniper._tasks))
+    run(go())
+    verdicts = {r["mint"]: r["verdict"] for r in state.outcome_rows()}
+    assert verdicts == {MINT: "BUY", "thin": "REJECT"}
+    assert state.db.execute("SELECT COUNT(*) FROM launches").fetchone()[0] == 2
+
+
+def test_cli_outcomes_report(settings, state, monkeypatch, capsys):
+    from memesniper.__main__ import main
+    state.start_outcome(pump_launch(), "BUY", "", 0.05, 5e4)
+    state.update_outcome(MINT, {"r5m": 2.2}, False)
+    monkeypatch.setenv("MEMESNIPER_STATE_PATH", settings.state_path)
+    main(["outcomes"])
+    assert "BY DECISION" in capsys.readouterr().out
+    main(["outcomes", "--json"])
+    assert json.loads(capsys.readouterr().out)["by_verdict"]["BUY"]["pct_hit_2x"] == 100.0

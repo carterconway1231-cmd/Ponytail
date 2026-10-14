@@ -17,7 +17,9 @@ def build(settings):
     from .feeds import DexScreenerFeed, PumpPortalHub
     from .jupiter import Jupiter
     from .net import SolanaRpc, make_client
+    from .creator import CreatorProfiler
     from .notify import Notifier
+    from .outcomes import OutcomeTracker
     from .risk import RiskManager
     from .safety import RugCheck
     from .state import State
@@ -32,7 +34,9 @@ def build(settings):
     sniper = Sniper(settings, state=state, risk=RiskManager(settings, state), rpc=rpc, jupiter=jup,
                     rugcheck=RugCheck(http, settings.rugcheck_url), dexscreener=dex,
                     agent=EntryAgent(settings), executor=executor, hub=hub, http=http,
-                    notifier=Notifier(settings, http))
+                    notifier=Notifier(settings, http),
+                    creators=CreatorProfiler(settings, state, rpc, http),
+                    outcomes=OutcomeTracker(settings, state, jup))
     feeds = [f for f in (hub, dex if "dexscreener" in settings.sources else None) if f]
     return sniper, feeds
 
@@ -104,6 +108,32 @@ def cmd_check(args):
     asyncio.run(go())
 
 
+def cmd_outcomes(args):
+    """What happened to tokens after each decision: the data for tuning filters and Claude."""
+    from .outcomes import build_report, format_report
+    from .state import State
+    st = State(load_settings().state_path)
+    since = time.time() - args.days * 86_400 if args.days else 0
+    rep = build_report(st.outcome_rows(since))
+    print(json.dumps(rep, indent=2) if args.json else format_report(rep))
+
+
+def cmd_creator(args):
+    """Creator history for a wallet: what the bot has seen locally plus pump.fun and wallet age."""
+    from .creator import CreatorProfiler
+    from .net import SolanaRpc, make_client
+    from .state import State
+    s = load_settings()
+    st = State(s.state_path)
+
+    async def go():
+        http = make_client()
+        prof = CreatorProfiler(s, st, SolanaRpc(http, s.rpc_url), http)
+        out = {"local": prof.local(args.wallet, ""), "remote": await prof.remote(args.wallet, "")}
+        print(json.dumps(out, indent=2))
+    asyncio.run(go())
+
+
 def cmd_test_alert(args):
     from .net import make_client
     from .notify import Notifier
@@ -165,6 +195,13 @@ def main(argv=None):
     c.add_argument("mint")
     c.add_argument("--ask", action="store_true", help="also ask Claude (costs one API call)")
     c.set_defaults(fn=cmd_check)
+    o = sub.add_parser("outcomes", help="how tokens did after each decision (tuning data)")
+    o.add_argument("--days", type=float, default=0, help="only the last N days (default: all)")
+    o.add_argument("--json", action="store_true")
+    o.set_defaults(fn=cmd_outcomes)
+    cr = sub.add_parser("creator", help="creator history for a wallet")
+    cr.add_argument("wallet")
+    cr.set_defaults(fn=cmd_creator)
     sub.add_parser("test-alert", help="send a test phone alert").set_defaults(fn=cmd_test_alert)
     sub.add_parser("wallet", help="show the bot's wallet address and SOL balance").set_defaults(fn=cmd_wallet)
     sub.add_parser("stop", help="kill switch: halt new entries").set_defaults(fn=cmd_stop)

@@ -62,6 +62,7 @@ class SafetyReport:
     hard_fails: list = field(default_factory=list)     # any -> reject, Claude not asked
     warnings: list = field(default_factory=list)
     metrics: dict = field(default_factory=dict)
+    ref_quote: tuple = None     # (sol, tokens) from the round-trip buy quote, for outcome tracking
 
     def fail(self, reason):
         self.passed = False

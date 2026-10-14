@@ -105,6 +105,18 @@ class Settings:
     webhook_url: str = ""
     alert_on_skips: bool = False        # also alert when Claude passes on a candidate
 
+    # --- outcome tracking (what happened after each decision) ---------------
+    outcome_tracking: bool = True
+    outcome_sample_rejects: float = 0.1  # share of safety rejections to track (all Claude calls are)
+    outcome_max_new_per_hour: int = 300
+    outcome_check_interval_s: float = 30.0
+
+    # --- creator history ------------------------------------------------------
+    pumpfun_api_url: str = "https://frontend-api-v3.pump.fun"   # unofficial; "" disables
+    creator_max_launches_24h: int = 3    # more other launches than this in 24h = serial launcher
+    creator_max_prior_rugs: int = 1      # reject once this many earlier tokens rugged (0 = off)
+    creator_min_wallet_age_hours: float = 0.0   # 0 = only warn about fresh wallets
+
     @property
     def live(self):
         return self.mode == "live"

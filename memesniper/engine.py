@@ -17,12 +17,13 @@ WRITE_OFF_AFTER_FAILURES = 24   # monitor ticks with no sell route before bookin
 
 class Sniper:
     def __init__(self, settings, *, state, risk, rpc, jupiter, rugcheck, dexscreener, agent,
-                 executor, hub=None, http=None, notifier=None):
+                 executor, hub=None, http=None, notifier=None, creators=None, outcomes=None):
         self.s = settings
         self.state, self.risk, self.rpc, self.jup = state, risk, rpc, jupiter
         self.rugcheck, self.dex, self.agent, self.exec = rugcheck, dexscreener, agent, executor
         self.hub, self.http = hub, http
         self.notifier = notifier
+        self.creators, self.outcomes = creators, outcomes
         self._obs_slots = asyncio.Semaphore(settings.max_concurrent_observations)
         self._sell_failures = {}
         self._tasks = set()
@@ -44,6 +45,7 @@ class Sniper:
     async def handle(self, launch):
         if not self.state.mark_seen(launch.mint):
             return None
+        self.state.record_launch(launch)
         halt = self.risk.halted()
         if self.notifier:
             await self.notifier.halted(halt)
@@ -62,7 +64,8 @@ class Sniper:
                     launch.description = meta.pop("description", launch.description)
                     launch.socials.update(meta)
 
-        report = await screen(launch, self.s, self.rpc, self.jup, self.rugcheck, self.dex, observation)
+        report = await screen(launch, self.s, self.rpc, self.jup, self.rugcheck, self.dex, observation,
+                              creators=self.creators)
         pair = report.metrics.get("pair") or {}
         launch.name = launch.name or pair.get("name", "")
         launch.symbol = launch.symbol or pair.get("symbol", "")
@@ -72,6 +75,7 @@ class Sniper:
         if not report.passed:
             log.debug("reject %s %s: %s", launch.symbol, launch.mint, "; ".join(report.hard_fails))
             self.state.record_decision(launch, report)
+            self._track(launch, report, "REJECT")
             return None
 
         decision = await self.agent.decide(launch, report, self.portfolio_summary(),
@@ -87,12 +91,14 @@ class Sniper:
                 await self.notifier.send(f"Skipped {launch.symbol or launch.mint[:6]}",
                                          decision.reasoning, event="skip")
             self.state.record_decision(launch, report, decision)
+            self._track(launch, report, "BLOCKED" if decision.action == "BUY" else "SKIP")
             return None
 
         fill = await self.exec.buy(launch.mint, approved.size_sol)
         if not fill or fill.tokens <= 0:
             approved.reasoning = f"[buy failed] {approved.reasoning}"
             self.state.record_decision(launch, report, approved)
+            self._track(launch, report, "BLOCKED")
             return None
         pos = Position(
             mint=launch.mint, symbol=launch.symbol or launch.mint[:6], entry_sol=fill.sol,
@@ -101,6 +107,7 @@ class Sniper:
             trailing_stop_pct=self.s.trailing_stop_pct, max_hold_minutes=approved.max_hold_minutes)
         self.state.open_position(pos, launch.creator, self.exec.mode, fill.sig)
         self.state.record_decision(launch, report, approved, executed=True)
+        self._track(launch, report, "BUY")
         log.info("BOUGHT %s %.4f SOL (%s) tp+%.0f%% sl-%.0f%% hold %.0fm", pos.symbol, fill.sol,
                  self.exec.mode, pos.take_profit_pct, pos.stop_loss_pct, pos.max_hold_minutes)
         if self.notifier:
@@ -193,6 +200,11 @@ class Sniper:
                     log.exception("monitor error on %s", p.symbol)
             await asyncio.sleep(self.s.monitor_interval_s)
 
+    def _track(self, launch, report, verdict):
+        """Start outcome tracking in the background so it never delays a trade."""
+        if self.outcomes is not None:
+            self._spawn(self.outcomes.track(launch, report, verdict))
+
     # --- run -----------------------------------------------------------------
     def _spawn(self, coro):
         t = asyncio.create_task(coro)
@@ -210,6 +222,8 @@ class Sniper:
 
     async def run(self, feeds):
         jobs = [self.monitor()] + [self.consume(f) for f in feeds]
+        if self.outcomes is not None:
+            jobs.append(self.outcomes.run())
         if self.hub is not None:
             jobs.append(self.hub.run())
         await asyncio.gather(*jobs)

@@ -25,6 +25,15 @@ CREATE TABLE IF NOT EXISTS decisions (
 );
 CREATE TABLE IF NOT EXISTS seen (mint TEXT PRIMARY KEY, ts REAL);
 CREATE INDEX IF NOT EXISTS idx_dec_ts ON decisions(ts);
+CREATE TABLE IF NOT EXISTS launches (mint TEXT PRIMARY KEY, creator TEXT, ts REAL, source TEXT);
+CREATE INDEX IF NOT EXISTS idx_launch_creator ON launches(creator, ts);
+CREATE TABLE IF NOT EXISTS outcomes (
+    mint TEXT PRIMARY KEY, symbol TEXT, creator TEXT, source TEXT,
+    verdict TEXT, reason TEXT, ts REAL, ref_sol REAL, ref_tokens REAL,
+    r5m REAL, r15m REAL, r1h REAL, r4h REAL, done INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_out_creator ON outcomes(creator);
+CREATE INDEX IF NOT EXISTS idx_out_done ON outcomes(done);
 """
 
 POSITION_FIELDS = ("mint", "symbol", "entry_sol", "tokens", "entry_price", "opened_at",
@@ -114,6 +123,57 @@ class State:
     def claude_spend_today(self):
         return self.db.execute("SELECT COALESCE(SUM(cost_usd),0) FROM decisions WHERE ts>=?",
                                (day_start(),)).fetchone()[0]
+
+    # --- creator history -----------------------------------------------------
+    def record_launch(self, launch):
+        if launch.creator:
+            self.db.execute("INSERT OR IGNORE INTO launches VALUES (?,?,?,?)",
+                            (launch.mint, launch.creator, launch.seen_at, launch.source))
+            self.db.commit()
+
+    def creator_stats(self, creator, exclude_mint, now=None):
+        """What this bot has seen of a creator's other launches."""
+        now = now or time.time()
+        empty = {"launches_seen": 0, "launches_24h": 0, "prior_tracked": 0, "prior_rugs": 0,
+                 "best_prior_x": None}
+        if not creator:
+            return empty
+        seen, day = self.db.execute(
+            "SELECT COUNT(*), SUM(ts >= ?) FROM launches WHERE creator=? AND mint!=?",
+            (now - 86_400, creator, exclude_mint)).fetchone()
+        rows = self.db.execute("SELECT r5m, r15m, r1h, r4h FROM outcomes WHERE creator=? AND mint!=?",
+                               (creator, exclude_mint)).fetchall()
+        rugs, best = 0, None
+        for r in rows:
+            early = [x for x in (r["r5m"], r["r15m"], r["r1h"]) if x is not None and x >= 0]
+            if early and min(early) <= 0.1:
+                rugs += 1
+            vals = [x for x in r if x is not None and x >= 0]
+            if vals:
+                best = max(best or 0, max(vals))
+        return {"launches_seen": seen or 0, "launches_24h": day or 0, "prior_tracked": len(rows),
+                "prior_rugs": rugs, "best_prior_x": round(best, 2) if best is not None else None}
+
+    # --- outcomes --------------------------------------------------------------
+    def start_outcome(self, launch, verdict, reason, ref_sol, ref_tokens):
+        self.db.execute("INSERT OR IGNORE INTO outcomes (mint, symbol, creator, source, verdict, reason, "
+                        "ts, ref_sol, ref_tokens) VALUES (?,?,?,?,?,?,?,?,?)",
+                        (launch.mint, launch.symbol, launch.creator, launch.source, verdict, reason,
+                         time.time(), ref_sol, ref_tokens))
+        self.db.commit()
+
+    def pending_outcomes(self):
+        return self.db.execute("SELECT * FROM outcomes WHERE done=0 ORDER BY ts").fetchall()
+
+    def update_outcome(self, mint, updates, done):
+        cols = [c for c in updates if c in ("r5m", "r15m", "r1h", "r4h")]
+        sets = ", ".join([f"{c}=?" for c in cols] + ["done=?"])
+        self.db.execute(f"UPDATE outcomes SET {sets} WHERE mint=?",
+                        [updates[c] for c in cols] + [int(done), mint])
+        self.db.commit()
+
+    def outcome_rows(self, since=0):
+        return self.db.execute("SELECT * FROM outcomes WHERE ts>=?", (since,)).fetchall()
 
     # --- decisions -----------------------------------------------------------
     def record_decision(self, launch, report, decision=None, executed=False):
