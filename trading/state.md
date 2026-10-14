@@ -206,3 +206,28 @@ Entry template:
 - Momentum: AAPL, ADBE, LLY, JPM and UNH are not standouts → gate 1 FAIL.
 - Options: no stock signal passed. Credit spread exceeds buying power.
 - Action: AMD exit only. No new entries.
+
+### 12:47 ET cycle: ENTRY AVGO
+- Reconcile: flat before entry. ~$29.30 cash.
+- Tape: SPY −1.02%, QQQ −1.66%, IWM −1.83%. SMH −3.29%, XLK −2.4%, XLC −1.3%, XLI −1.3%, XLY −1.2%; XLV +2.1%, XLP +1.4%, XLE +0.5%. Broad risk-off, tech-led.
+- Mean reversion (looser tier, ≤−2%):
+  - ORCL and BAC: company-specific → gate 1 FAIL.
+  - AMD: stopped out at 11:47 → no same-day re-entry.
+  - META: gate 2 FAIL (Q2 miss).
+  - TSLA −2.36%: gate 2 FAIL (Q2 EPS 0.33 vs 0.44 est; earnings 10/21).
+  - CAT −3.04%: gate 1 FAIL. The 10/13 −5% drop was company-specific and is still unexplained.
+  - GS −2.20%: gate 1 FAIL. Post-earnings move (reported 10/13), XLF only −0.96%; cause not confirmed external.
+  - MU −2.52%: gate 1 FAIL. Pressure is memory-specific (CXMT competition news 10/13), not only the sector.
+  - NVDA −2.80%: all gates pass (Q2 beat 2.22 vs 2.09, earnings 11/17; PT 334 +50%; trend 1/3, not a downtrend). Skipped for concentration: same AI-chip theme as AVGO, and two correlated chip positions would put ~95% of the account in one sector.
+  - AVGO −2.70% (SMH −3.29%, rs +0.59) → ALL GATES PASS:
+    1. Cause PASS: sector-wide AI-chip selloff, no AVGO-specific news.
+    2. Fundamentals PASS: Q3 FY26 3.32 vs 3.16 est (beat; 6 straight beats). Next report 12/9.
+    3. Anchor PASS: mean PT $529.30 (+52%), 51 Buy / 3 Hold / 0 Sell.
+    4. Trend PASS: downtrend false (0/3 weekly), higher_low true, 8.7% below 20d high.
+  - Spread 347.30/347.34 = 0.01% ✓.
+  - Order: review → market $14.00. Filled 0.040308 sh @ $347.3199 (order 6acfb389).
+  - Stop $345.68 (day low 346.72 − 0.3%; risk $1.64 = 0.47%). Target $357.31 (prior close) = 6.1R. Horizon 3 days.
+  - Risk note: price was at the day low in a falling tape (same pattern as the AMD stop-out). The rules allow the entry; the stop is tight, so expect a stop-out if the selloff continues.
+- Momentum: AAPL, ADBE, JPM, LLY, HON and MRK are not standouts → gate 1 FAIL.
+- Options: AVGO spread max loss exceeds the $14.71 cap; credit spread exceeds buying power → stock.
+- Entries today: 2 of 3. Positions: 1 of 2.
