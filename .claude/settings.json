@@ -2,6 +2,7 @@
   "permissions": {
     "allow": [
       "mcp__Robinhood"
-    ]
+    ],
+    "defaultMode": "acceptEdits"
   }
 }
