@@ -240,3 +240,19 @@ Entry template:
 - Momentum: ADBE, AAPL, HON, MCD, MRK, JPM, ABBV and LLY are not standouts → FAIL.
 - Options: none (no new signal; credit spread exceeds buying power).
 - Action: hold AVGO. No new entries. Entries 2 of 3; positions 1 of 2.
+
+### 14:47 ET cycle: EXIT AVGO (stop)
+- Stops first:
+  - AVGO last $344.19 < stop $345.68 → EXIT_STOP. Review → market sell 0.040308 sh, filled @ $344.1901 (order 6acfce52).
+  - P&L −$0.13, −1.91R: hourly check slippage again.
+  - Score 44 (setup 26 / execution 18 / outcome 0). Day trade #2 in the last 5 sessions.
+- Account: flat. Daily realized P&L −$0.26 (AMD −0.13, AVGO −0.13); limit $7.36. Equity ≈ $29.17.
+- Tape: SPY −1.31%, QQQ −2.12%, IWM −2.21%. SMH −3.93% (new lows again), XLK −3.1%; XLV +2.4%, XLP +1.9%. Selloff unbroken all day.
+- Mean reversion: 14:47 is the any-reasonable tier, which only applies if no trade qualified earlier today. AMD and AVGO qualified, so the tier is closed. No MR entries. (For the record: NVDA still technically passes; AMZN −2.0% is new; neither is eligible.)
+- Momentum: ADBE, AAPL, MCD, HON, JPM, UNH and LLY are not standouts → FAIL.
+- Options: none.
+- Review note for the user: both of today's entries failed the same way. They were bought at the day low in a sector still making new lows, with stops 0.5% under the low, and stopped within 1–2 hours at about −1.6R to −1.9R each because of hourly-check slippage. Proposed rule change (needs approval before it is used):
+  - (a) Mean-reversion entry requires the sector ETF to be off its intraday low by ≥0.3% (a sign of stabilization).
+  - (b) Stop = day low − max(0.3%, 0.5× the day's range).
+  - (c) No second same-sector MR entry on a day the first one stopped out.
+- Action: AVGO exit. No entries. Entries 2 of 3; positions 0 of 2.
