@@ -273,3 +273,21 @@ Entry template:
 - Note: pending_deposits went $30 → $0, but cash did not rise. The $30 deposit has dropped off as pending without arriving in this account (it may have been cancelled, returned, or routed to another account). Flagged to the user.
 - Tape (18 min in): SPY −0.40%, QQQ −1.29%, IWM +0.08%. SMH −3.15% (semis selloff day 6), XLK −2.0%; XLV +1.9%, XLP +2.0%, XLRE +1.2%, XLC +0.8%. Rotation out of tech continues.
 - Action: none. No entries on the 09:47 cycle (opening range). The rule changes proposed 10/14 are not yet approved; current rules stay in force.
+
+### 10:47 ET cycle
+- Reconcile: flat. $29.17 cash.
+- Tape: SPY −0.11%, QQQ −0.84%, IWM +0.81%. SMH −2.30%, off its 9:50 low of 540.59 (now ~551.7, +2%). XLV +2.3%, XLP +1.7%, XLB +1.5%, XLC +1.2%, XLY +1.1%. Breadth improving; semis still red but bouncing.
+- Mean reversion (clean tier):
+  - AMD −4.10% (SMH −2.30%, hint external):
+    - Gates 1–4 pass: sector selloff day 6; Q2 beat, earnings 11/3; PT 654 (+19%); trend 1/3, not a downtrend; 16.9% below 20d high.
+    - It has stabilized: day low 530.09 at 09:50, now ~547 (+3.3%, higher lows since).
+    - Risk/reward FAIL: stop 528.50 (low − 0.3%, risk ~$18.9/sh) vs target 570.82 (prior close, nearer than the 10d avg 610.8) = 1.24R < 1.5R minimum → SKIP per the target rule.
+  - CAT −2.87%: not in the clean tier (needs ≤−3%); its drop is still unexplained (gate 1 default FAIL).
+- Momentum:
+  - ADBE +4.44% (rs +5.97, standout): gate 2 FAIL, no dated catalyst found. Gate 3 also FAILS: in a downtrend since Aug (292 → 236).
+  - NFLX +3.26% (standout): gate 2 FAIL, earnings 10/20 inside the 5-day horizon.
+  - LLY +4.28% (standout): gate 2 FAIL, no dated catalyst found (earnings 10/29).
+  - BA +1.27% (standout): gate 2 FAIL, no catalyst.
+  - CRM, NKE, HD, MSFT, AAPL and ORCL: not standouts → FAIL.
+- Options: no signal; credit spread exceeds buying power.
+- Action: none. 0 of 3 entries.
