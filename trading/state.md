@@ -304,3 +304,23 @@ Entry template:
   - ADBE, CRM, ORCL, MSFT, LLY, HD, UNH and AAPL: not standouts this cycle → FAIL.
 - Options: none.
 - Action: none. 0 of 3 entries.
+
+### 12:47 ET cycle: ENTRY AVGO
+- Reconcile: flat before entry. $29.17 cash.
+- Tape: SPY +0.03%, QQQ −0.72%, IWM +0.67%. SMH −2.33%, holding above its 09:50 low. XLV +2.6%, XLY +1.3%, XLF +1.1%, XLC +1.1%.
+- Mean reversion (looser tier, ≤−2%):
+  - AMD −4.06%: target 570.82 vs stop 528.50 = 1.21R < 1.5R → SKIP.
+  - CAT −2.92%: gate 1 FAIL (unexplained company drop since 10/13).
+  - TSLA −2.06%: gate 2 FAIL (Q2 miss; earnings 10/21 inside horizon).
+  - AVGO −2.34% (SMH −2.33%, rs ~0, hint external) → ALL GATES PASS:
+    1. Cause PASS: sector-wide semis selloff, day 6; no AVGO news.
+    2. Fundamentals PASS: Q3 FY26 beat 3.32 vs 3.16; next report 12/9.
+    3. Anchor PASS: mean PT $529 (+56%).
+    4. Trend PASS: 0/3 weekly at 10/14, not a downtrend.
+    - Stabilization: held above the 334.61 09:30 low for three hours (low 337.68 in the last bar). Spread 0.02% ✓.
+    - R/R: entry 338.31, stop 333.61 (334.61 − 0.3%), risk $4.70 (1.39%); target 346.25 (prior close) = 1.69R ≥ 1.5 ✓.
+    - Order: review → market $14.00. Filled 0.041381 sh @ $338.3139 (order 6ad103ce). Horizon 3 days.
+    - Note: this stop sits 1.4% under the entry, versus 0.5% on 10/14, and the stock is not at the day low. Still the same name and theme that stopped out on 10/14.
+- Momentum: NKE, NFLX and others as at 11:47 → FAIL (no catalyst / earnings inside horizon).
+- Options: AVGO spread exceeds the $14.58 cap → stock.
+- Entries today: 1 of 3. Positions: 1 of 2.
