@@ -345,3 +345,15 @@ Entry template:
 - Momentum: standouts NKE +6.3%, NFLX +3.3% → FAIL gate 2 as earlier (no catalyst / earnings inside horizon). ADBE, CRM, ORCL, MSFT, LLY, HD, UNH: not standouts → FAIL. (UNH beat 10/13, but LLY leads XLV, so no standout.)
 - Options: none (buying power $15.17).
 - Action: hold AVGO. Entries 1 of 3; positions 1 of 2. 15:47 cycle applies the overnight rule.
+
+### 15:47 ET cycle
+- Reconcile: AVGO 0.041381 sh @ 338.32 matches the ledger. Total $29.43.
+- Stops: AVGO $344.54 vs stop $333.61 / target $346.25 → +1.32R. Semis recovered into the close (SMH −0.86% from −2.23%).
+- **Overnight rule (mean_reversion.md):** same-day entry with ≥1R in hand → prefer closing before 15:50. Day trades 2 → 3 (≤3 allowed).
+- **CLOSED AVGO:** market sell 0.041381 sh, filled @ $344.4537 (order 6ad12e01). P&L +$0.25, +1.31R. Score 79 (setup 30/40, execution 32/35, outcome 17/25: 1.31R vs 1.69R implied, closed per the overnight rule, not at target).
+  - Lesson vs 10/14: same name and theme, but waiting for 3 hours of stabilization above the opening low and taking a wider stop turned two −1.9R stop-outs into a +1.3R win. This supports proposed change (a) (sector off its low before entry). The proposals are still unapproved.
+- Tape: SPY +0.36%, QQQ +0.02%, IWM +1.34%. XLV +2.1%, XLY +1.7%, XLF +1.4%; XLK −0.5%, XLE −1.9%.
+- Mean reversion: any-reasonable tier closed (AVGO qualified today). CAT −1.3%, PLD −2.5%, AMD −0.9% → no entry.
+- Momentum: NKE, NFLX standouts → FAIL gate 2 as earlier. No entries at the close; day trades are now 3 of 3 in 5 sessions, so a new entry could not be exited before 10/17 except at its stop.
+- Options: none (buying power $29.43 after settlement; still below the ~$85 credit-spread minimum).
+- End of day: flat. Realized today +$0.25. Entries 1 of 3. Day trades 3 in the last 5 sessions (10/14 ×2, 10/15). No position held overnight.
