@@ -336,3 +336,12 @@ Entry template:
 - Momentum: NKE +6.7% (no catalyst → FAIL); others are not standouts.
 - Options: none.
 - Action: hold AVGO. Entries 1 of 3; positions 1 of 2.
+
+### 14:47 ET cycle
+- Reconcile: AVGO 0.041381 sh @ 338.32 matches the ledger. Cash $15.17, total $29.19.
+- Stops: AVGO $338.80 vs stop $333.61 / target $346.25 → HOLD (+0.1R, cushion 1.1R). SMH −2.23% (gave back the 13:47 bounce); AVGO −2.15%, in line with sector.
+- Tape: SPY +0.05%, QQQ −0.64%, IWM +0.79%. XLV +2.3%, XLB +1.6%, XLC +1.5%, XLY +1.5%, XLF +1.4%; XLK −1.4%, XLE −1.7%.
+- Mean reversion: past 14:45, any-reasonable tier closed (AVGO qualified earlier today). AMD −3.37%, CAT −2.67%, PLD −2.18% → no entry (tier closed).
+- Momentum: standouts NKE +6.3%, NFLX +3.3% → FAIL gate 2 as earlier (no catalyst / earnings inside horizon). ADBE, CRM, ORCL, MSFT, LLY, HD, UNH: not standouts → FAIL. (UNH beat 10/13, but LLY leads XLV, so no standout.)
+- Options: none (buying power $15.17).
+- Action: hold AVGO. Entries 1 of 3; positions 1 of 2. 15:47 cycle applies the overnight rule.

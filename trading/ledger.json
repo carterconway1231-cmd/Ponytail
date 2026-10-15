@@ -70,11 +70,12 @@
    "horizon_days": 3,
    "id": "7328ac41",
    "initial_stop": 333.61,
-   "mark": 338.3139,
+   "mark": 338.8,
+   "marked_at": "2026-10-15T18:47:53.045116+00:00",
    "opened_at": "2026-10-15T16:48:29.548127+00:00",
    "opened_day": "2026-10-15",
    "order_id": "6ad103ce-d663-421a-a864-44bbc05a4960",
-   "prev_close": null,
+   "prev_close": 346.25,
    "qty": 0.041381,
    "stop": 333.61,
    "strategy": "mean_reversion",
@@ -88,17 +89,17 @@
  "regime": {
   "chips": [
    {
-    "chg": 0.07,
+    "chg": 0.05,
     "label": "SPY",
     "name": "SPY"
    },
    {
-    "chg": -0.68,
+    "chg": -0.64,
     "label": "QQQ",
     "name": "QQQ"
    },
    {
-    "chg": 0.78,
+    "chg": 0.79,
     "label": "IWM",
     "name": "IWM"
    },
@@ -108,62 +109,62 @@
     "name": "XLK"
    },
    {
-    "chg": -2.22,
+    "chg": -2.23,
     "label": "Semis",
     "name": "SMH"
    },
    {
-    "chg": 1.37,
+    "chg": 1.52,
     "label": "Comm",
     "name": "XLC"
    },
    {
-    "chg": 1.5,
+    "chg": 1.49,
     "label": "Discretionary",
     "name": "XLY"
    },
    {
-    "chg": 0.91,
+    "chg": 1.39,
     "label": "Financials",
     "name": "XLF"
    },
    {
-    "chg": 2.72,
+    "chg": 2.33,
     "label": "Health",
     "name": "XLV"
    },
    {
-    "chg": -1.37,
+    "chg": -1.74,
     "label": "Energy",
     "name": "XLE"
    },
    {
-    "chg": -0.16,
+    "chg": -0.09,
     "label": "Industrials",
     "name": "XLI"
    },
    {
-    "chg": 1.55,
+    "chg": 0.97,
     "label": "Staples",
     "name": "XLP"
    },
    {
-    "chg": -0.3,
+    "chg": -0.14,
     "label": "Utilities",
     "name": "XLU"
    },
    {
-    "chg": 1.68,
+    "chg": 1.6,
     "label": "Materials",
     "name": "XLB"
    },
    {
-    "chg": 1.02,
+    "chg": 1.08,
     "label": "Real estate",
     "name": "XLRE"
    }
   ],
-  "chips_ts": "2026-10-15T15:48:05.976615+00:00",
+  "chips_ts": "2026-10-15T18:48:21.132356+00:00",
   "read": "Close: semis -2.0%, tech -1.3%, defensives and energy green, SPY -0.1%. One-day rotation out of chips (CXMT memory news).",
   "ts": "2026-10-12 18:27 ET"
  },
@@ -274,8 +275,8 @@
    "why": "unchanged: gate 4 FAIL (below 50-day, lower highs)"
   }
  ],
- "today_unrealized": -0.05,
- "today_unrealized_day": "2026-10-14",
+ "today_unrealized": 0.02,
+ "today_unrealized_day": "2026-10-15",
  "trades": [
   {
    "closed_at": "2026-10-13T15:43:29.816413+00:00",
