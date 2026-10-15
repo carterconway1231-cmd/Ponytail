@@ -324,3 +324,15 @@ Entry template:
 - Momentum: NKE, NFLX and others as at 11:47 → FAIL (no catalyst / earnings inside horizon).
 - Options: AVGO spread exceeds the $14.58 cap → stock.
 - Entries today: 1 of 3. Positions: 1 of 2.
+
+### 13:47 ET cycle
+- Reconcile: AVGO 0.041381 sh @ 338.32 matches the ledger.
+- Stops: AVGO $339.73 vs stop $333.61 / target $346.25 → HOLD (+$1.41/sh, +0.3R). Semis bouncing: SMH −1.70% from −2.33%.
+- Tape: SPY +0.25%, QQQ −0.36%, IWM +0.90%. XLV +2.3%, XLC +1.7%, XLY +1.6%, XLB +1.6%, XLF +1.3%. Broad recovery.
+- Mean reversion (looser tier):
+  - AMD −2.91%: R/R now worse (stop 528.50, target 570.82 → 0.65R) → SKIP.
+  - CAT −2.70%: gate 1 FAIL (unexplained).
+  - Nothing else at ≤−2%.
+- Momentum: NKE +6.7% (no catalyst → FAIL); others are not standouts.
+- Options: none.
+- Action: hold AVGO. Entries 1 of 3; positions 1 of 2.
