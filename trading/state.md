@@ -265,3 +265,11 @@ Entry template:
   - AVGO (looser tier) bought 347.32, stopped 344.19: −$0.13, −1.91R, score 44.
   - Day P&L −$0.26 (−0.9%). 2 day trades in the last 5 sessions.
   - Both entries were dip-buys into a semis selloff that never stabilized (SMH closed near −4%). The stop-placement and sector-stabilization rule changes proposed at 14:47 await the user's decision.
+
+## 2026-10-15
+
+### 09:47 ET cycle
+- Reconcile: flat. Account $29.17 cash, buying power $29.17. Day-start equity recorded: size $14, option cap $14.58, daily loss limit $7.29.
+- Note: pending_deposits went $30 → $0, but cash did not rise. The $30 deposit has dropped off as pending without arriving in this account (it may have been cancelled, returned, or routed to another account). Flagged to the user.
+- Tape (18 min in): SPY −0.40%, QQQ −1.29%, IWM +0.08%. SMH −3.15% (semis selloff day 6), XLK −2.0%; XLV +1.9%, XLP +2.0%, XLRE +1.2%, XLC +0.8%. Rotation out of tech continues.
+- Action: none. No entries on the 09:47 cycle (opening range). The rule changes proposed 10/14 are not yet approved; current rules stay in force.
