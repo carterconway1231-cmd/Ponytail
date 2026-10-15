@@ -291,3 +291,16 @@ Entry template:
   - CRM, NKE, HD, MSFT, AAPL and ORCL: not standouts → FAIL.
 - Options: no signal; credit spread exceeds buying power.
 - Action: none. 0 of 3 entries.
+
+### 11:47 ET cycle
+- Reconcile: flat. $29.17 cash.
+- Tape: SPY +0.07%, QQQ −0.68%, IWM +0.78%. SMH −2.22%, holding above its 09:50 low. XLV +2.7%, XLP +1.6%, XLB +1.7%, XLY +1.5%, XLC +1.4%. Broad rotation; market recovering.
+- Mean reversion (clean tier):
+  - AMD −4.03%: unchanged from 10:47; still 1.24R to the prior close vs a stop under the 530.09 low → SKIP (<1.5R).
+  - CAT −2.40% and NVDA −2.05%: above the −3% clean-tier threshold.
+- Momentum:
+  - NKE +5.65% (rs +4.15, standout): gate 2 FAIL. News describes a technical rebound off near-52-week lows with no company catalyst; HSBC cut its PT to $34 the same day.
+  - NFLX +2.90% (standout): gate 2 FAIL, earnings 10/20 inside the horizon.
+  - ADBE, CRM, ORCL, MSFT, LLY, HD, UNH and AAPL: not standouts this cycle → FAIL.
+- Options: none.
+- Action: none. 0 of 3 entries.
