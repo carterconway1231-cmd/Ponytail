@@ -441,3 +441,10 @@ Entry template:
 - Mean reversion: the any-reasonable tier (14:45+) is closed, because AMD/ORCL qualified earlier today. Same PDT block regardless.
 - Momentum: none (AAPL −0.20%, lost its relative-strength edge). Options: QQQ −2.48% is past the −2% filter → no QQQ spreads; SPY spreads have failed the 20% credit rule all day.
 - Action: none. Entries 0 of 3.
+
+### 15:47 ET cycle — ANOMALY, entries halted
+- Reconcile: **account value $9.42 cash, buying power $9.42**. At 09:47–14:47 it was $229.42. There are no positions (equity, options or crypto) and **no equity or option orders today**. The $220 drop is not a trading loss; it is a cash movement outside the bot (a withdrawal or transfer out, or a reversed deposit).
+- Per framework guardrails (halt and flag on anomalous data): **no equity recorded this cycle and no entries.** Recording $9.42 against the $229.42 peak would read as a 96% drawdown and falsely trip the 20% circuit breaker. The ledger's peak/equity series is left at $229.42 until the user confirms what happened, then it will be reset as a deposit/withdrawal adjustment, not P&L.
+- Tape at the close: SPY −1.19%, QQQ −2.59%, IWM −1.80%, XLK −3.02%, SMH −3.25%, XLE +2.4%. AMD 528.95 (−5.9%), ORCL 128.16 (−4.7%): both well below the stops their 11:47 entries would have used.
+- End of day: flat. No trades today. Realized P&L $0. Day trades still 3 in the last 5 sessions (clears 10/21).
+- Pending with the user: (1) explain the $220 cash change; (2) Block 1 answers for the framework rebuild.
