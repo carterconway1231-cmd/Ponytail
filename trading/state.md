@@ -392,3 +392,24 @@ Entry template:
   - No passing stock signal, so no call expressions.
 - Observation: at current SPY IV (~16%), a 0.20-delta $1-wide put spread structurally collects ~12–15% of width, so the 20% credit rule blocks SPY in calm markets. QQQ (higher IV) comes close. Logged for the weekly review; the rule is not changed.
 - Action: none. Entries 0 of 3.
+
+### 11:47 ET cycle
+- Reconcile: flat, $229.42 cash.
+- Tape: SPY −0.33%, QQQ −1.27%, IWM −0.74%. XLK −1.75%, SMH −1.47% (both making new intraday lows in the 11:00 bar), XLC −0.66%. Defensives up: XLP +1.1%, XLU +1.2%, XLE +1.2%, XLB +1.1%.
+- Mean reversion (clean tier 10:30–12:30: ≤−3%, sector ≤−1%, ≥5% off 20d high):
+  - **AMD −3.35%** (SMH −1.47%, rs −1.88): ALL GATES PASS.
+    1. Cause PASS: semis selloff (day 7).
+    2. Fundamentals PASS: Q2 beat 1.66 vs 1.55; next report 11/3.
+    3. Anchor PASS: mean PT $654 (+20%), 47 Buy / 10 Hold / 0 Sell.
+    4. Trend PASS: 1/3 weekly, 17.5% off its 20d high.
+    - R/R: entry 543.40, stop 537.20 (day low 538.82 − 0.3%), target 562.23 (prior close; 10d avg 603 is farther) = 3.0R.
+    - **SKIPPED: PDT.** `day_trades_last_5_sessions` = 3 (10/14 AMD + AVGO, 10/15 AVGO). The account is limited margin under $25k. A same-day stop exit would be a 4th day trade in 5 sessions → PDT flag, which framework §3 forbids ("keep it at 3 or fewer"). mean_reversion.md says hold to the next session "unless the stop forces the exit", and a forced exit is exactly the PDT breach. Both rules can't be honored with an intraday stop 1.1% under a day low that SMH is still breaking. This is the 10/14 pattern (two −1.9R stop-outs at the day low).
+  - **ORCL −3.09%** (XLK −1.75%): gates pass; gate 1 marginal (10/14 −7% company-specific drop; today rs −1.34). Stop 128.47 / target 134.47 = 2.2R. SKIPPED on the same PDT grounds, and it sits at its day low.
+  - MU −3.26%: gate 4 FAIL (downtrend 3/3).
+  - CRM −3.08%: tier FAIL (4.88% off its 20d high, needs ≥5%).
+- Momentum: AAPL (rs +2.66, standout) still FAILS gate 2 (no dated catalyst); NVDA +0.36% (rs +1.83 vs SMH, standout): gate 2 FAIL (no catalyst found; it is holding up while semis fall); GE not a standout.
+- Options:
+  - SPY 740/739: credit 0.135 = 13.5% → FAIL.
+  - QQQ (−1.27%): 690/689 credit 0.21 = 21% but short δ −0.27 (not near 0.20) → FAIL. 685/684: 0.19 = 19% → FAIL (684 OI 40).
+- PDT window: 10/14's two day trades roll off on 10/21. Until then any entry must be one that can be held overnight. Entries late in the session minimize same-day stop exposure.
+- Action: none. Entries 0 of 3.
