@@ -357,3 +357,12 @@ Entry template:
 - Momentum: NKE, NFLX standouts → FAIL gate 2 as earlier. No entries at the close; day trades are now 3 of 3 in 5 sessions, so a new entry could not be exited before 10/17 except at its stop.
 - Options: none (buying power $29.43 after settlement; still below the ~$85 credit-spread minimum).
 - End of day: flat. Realized today +$0.25. Entries 1 of 3. Day trades 3 in the last 5 sessions (10/14 ×2, 10/15). No position held overnight.
+
+## 2026-10-16
+
+### Pre-market (09:13 ET), user deposit
+- Deposit landed: account $229.42 cash, buying power $229.42, no positions. Equity recorded. This is a deposit, not P&L; the peak resets to $229.42.
+- Account: limited margin, option level 3, so spreads are allowed.
+- Limits recomputed from `$B gate`: stock size $114, option max loss $100 (50% of account = $114.71, capped at $100), daily loss limit $57.35.
+- Options are now reachable. A $100-max-loss SPY/QQQ put credit spread fits buying power, and so do call debit spreads and long calls on passing stock signals. The §6 caveat about option sizing at a small account size no longer binds.
+- Day trades: 3 in the last 5 sessions until 10/14 rolls off, so a same-day exit is allowed only at a forced stop until 10/20. Credit spreads (≤21 DTE management) are multi-day, so this does not block them.
