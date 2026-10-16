@@ -377,3 +377,18 @@ Entry template:
   - Buying calls at the open would already be underwater. That supports momentum gate 4.
 - No entries this cycle (09:47: momentum banned, MR clean tier starts 10:30, credit spreads from 10:47).
 - Watch at 10:47: SPY/QQQ put credit spreads (QQQ −0.8% is within the −2% filter); AAPL momentum only on a held pullback plus a dated catalyst. TSLA is out (earnings 10/21 inside the horizon).
+
+### 10:47 ET cycle
+- Reconcile: flat, $229.42 cash. No option positions.
+- Tape: SPY +0.08%, QQQ −0.62%, IWM −0.20%. XLK −0.85%, SMH −0.88%, XLY +0.6%, XLF +0.9%, XLI +0.8%, XLE +1.2%, XLB +1.3%.
+- Mean reversion (clean tier ≤−3%): none. MU −2.78%, AMD −2.50%, CRM −2.22%, UNH −2.03% are all above −3% → no qualifier. (The looser −2% tier opens at 12:30.)
+- Momentum standouts:
+  - GE +2.69% (rs +1.86 vs XLI): gate 2 FAIL, earnings 10/20 am inside the 5-day horizon. Gate 3 also doubtful: in a downtrend since Aug (375 → 304), only 3 sessions of higher lows.
+  - AAPL +0.95% (rs +1.80 vs XLK, standout): gate 2 FAIL, no dated catalyst found (web search returned nothing for 10/16; pre-market +1.6% faded to +0.25% at 09:48, back to +0.95%). Earnings 11/2 is outside the horizon. Gate 3 would pass: uptrend, highs at 348 on 10/13–10/15, lows rising since 9/29.
+- Options:
+  - Put credit spreads, 11/30 expiry (45 DTE):
+    - SPY 740/739 (short δ −0.19, IV 16.2%): credit 0.12 = 12% of width → FAIL (<20%). 745/744 (δ −0.22): 0.14 = 14% → FAIL. 735/734: 0.095 → FAIL. 5-wide 745/740: 0.65 = 13% → FAIL.
+    - QQQ 685/684 (δ −0.22, IV 23.1%): 0.165 = 16.5% → FAIL; 684 OI 40 < 100 also FAIL. 690/689 (δ −0.245): 0.195 = 19.5% → FAIL (just under, and delta past 0.20).
+  - No passing stock signal, so no call expressions.
+- Observation: at current SPY IV (~16%), a 0.20-delta $1-wide put spread structurally collects ~12–15% of width, so the 20% credit rule blocks SPY in calm markets. QQQ (higher IV) comes close. Logged for the weekly review; the rule is not changed.
+- Action: none. Entries 0 of 3.
