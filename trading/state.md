@@ -433,3 +433,11 @@ Entry template:
 - Momentum: no standouts with a catalyst (AAPL +0.23%, rs +2.7: gate 2 FAIL).
 - Options: SPY −0.92% and QQQ −2.10%. QQQ is now past the −2% filter → SKIP QQQ put spreads today. SPY credit was ~15% of width last cycle; not re-quoted (the structure has failed all day at 0.20 delta).
 - Action: none. Entries 0 of 3.
+
+### 14:47 ET cycle
+- Reconcile: flat, $229.42 cash.
+- Tape: SPY −1.22%, QQQ −2.48%, IWM −1.68%. XLK −2.93%, SMH −3.01%, XLC −2.10%, XLY −1.22%. XLE +2.3%, XLF +0.1%. Down session, still making lows into the afternoon.
+- Skip check: ORCL is now 128.20, below the 128.47 stop the 11:47 entry would have used. AMD 533.39 is also below its 537.20 stop. Both PDT skips are validated: either entry would have been a same-day stop-out (a 4th day trade → PDT flag).
+- Mean reversion: the any-reasonable tier (14:45+) is closed, because AMD/ORCL qualified earlier today. Same PDT block regardless.
+- Momentum: none (AAPL −0.20%, lost its relative-strength edge). Options: QQQ −2.48% is past the −2% filter → no QQQ spreads; SPY spreads have failed the 20% credit rule all day.
+- Action: none. Entries 0 of 3.
