@@ -366,3 +366,14 @@ Entry template:
 - Limits recomputed from `$B gate`: stock size $114, option max loss $100 (50% of account = $114.71, capped at $100), daily loss limit $57.35.
 - Options are now reachable. A $100-max-loss SPY/QQQ put credit spread fits buying power, and so do call debit spreads and long calls on passing stock signals. The §6 caveat about option sizing at a small account size no longer binds.
 - Day trades: 3 in the last 5 sessions until 10/14 rolls off, so a same-day exit is allowed only at a forced stop until 10/20. Credit spreads (≤21 DTE management) are multi-day, so this does not block them.
+
+### 09:47 ET cycle (reconcile, stops and market read only)
+- Reconcile: flat, cash $229.42 = buying power. Broker and ledger match.
+- Stops: none (no positions).
+- Tape: SPY 0.00%, QQQ −0.80%, IWM +0.11%. XLK −1.26%, SMH −1.47% (semis weak, day 7). XLB +1.6%, XLI +1.0%, XLP +1.2%, XLE +1.2%, XLF +1.2%, XLY +0.9%. Rotation out of tech into cyclicals and defensives.
+- Pre-market gap fades (the user asked about calls at the open):
+  - AAPL pre-market +1.58% (347.41) → +0.25% (342.84) at 09:48.
+  - TSLA +2.92% (373.02) → +1.31% (367.20).
+  - Buying calls at the open would already be underwater. That supports momentum gate 4.
+- No entries this cycle (09:47: momentum banned, MR clean tier starts 10:30, credit spreads from 10:47).
+- Watch at 10:47: SPY/QQQ put credit spreads (QQQ −0.8% is within the −2% filter); AAPL momentum only on a held pullback plus a dated catalyst. TSLA is out (earnings 10/21 inside the horizon).
