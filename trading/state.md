@@ -413,3 +413,14 @@ Entry template:
   - QQQ (−1.27%): 690/689 credit 0.21 = 21% but short δ −0.27 (not near 0.20) → FAIL. 685/684: 0.19 = 19% → FAIL (684 OI 40).
 - PDT window: 10/14's two day trades roll off on 10/21. Until then any entry must be one that can be held overnight. Entries late in the session minimize same-day stop exposure.
 - Action: none. Entries 0 of 3.
+
+### 12:47 ET cycle
+- Reconcile: flat, $229.42 cash.
+- Tape weakening: SPY −0.72%, QQQ −1.71%, IWM −1.38%. XLK −2.15%, SMH −1.87%, XLC −1.24%, XLY −0.38%. Defensives and energy up (XLE +1.9%, XLP +0.9%, XLU +1.2%). Risk-off rotation out of tech, day 7 for semis.
+- Mean reversion (looser tier ≤−2%): MU −3.72% (downtrend, gate 4 FAIL), AMD −3.67%, ORCL −3.56%, AVGO −3.18%, META −2.72%, NFLX −2.49%, ADBE −2.46%, CRM −2.46%, MSFT −2.01%.
+  - AMD and ORCL still pass gates as at 11:47. Their sectors (XLK, SMH) are still making new lows.
+  - All entries are SKIPPED on PDT, the same as 11:47: 3 day trades in the last 5 sessions, so a same-day stop exit would be a 4th day trade and flag the account. The rest were not gate-checked in depth since the PDT block applies to any entry with a same-day stop exposure.
+- Momentum: AAPL +0.70% (rs +2.85 vs XLK): gate 2 FAIL as before (no dated catalyst). No other standouts.
+- Options: SPY 740/739 (δ −0.24) credit 0.155 = 15.5% → FAIL. QQQ 685/684 (δ −0.27) credit 0.22 = 22% but delta is not near 0.20 and 684 OI 40 < 100 → FAIL.
+- Note: the user started a framework rebuild (setup script, Block 1 asked and awaiting answers). The current rules stay in force until the new files are confirmed.
+- Action: none. Entries 0 of 3.
