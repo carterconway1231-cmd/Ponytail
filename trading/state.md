@@ -424,3 +424,12 @@ Entry template:
 - Options: SPY 740/739 (δ −0.24) credit 0.155 = 15.5% → FAIL. QQQ 685/684 (δ −0.27) credit 0.22 = 22% but delta is not near 0.20 and 684 OI 40 < 100 → FAIL.
 - Note: the user started a framework rebuild (setup script, Block 1 asked and awaiting answers). The current rules stay in force until the new files are confirmed.
 - Action: none. Entries 0 of 3.
+
+### 13:47 ET cycle
+- Reconcile: flat, $229.42 cash.
+- Tape: SPY −0.92%, QQQ −2.10%, IWM −1.52%. XLK −2.49%, SMH −2.35%, XLC −1.63%, XLY −0.91%. XLE +2.2%, XLU +1.3%, XLP +0.9%. The tech selloff deepened through midday.
+- Skip check (11:47 PDT skips): AMD is now 534.11, below the 537.20 stop the entry would have used (day low 538.82 broke). It would have been a same-day stop-out (~−1.5R with slippage) and a 4th day trade → PDT flag. ORCL 129.14, near its 128.47 stop (day low 128.86 holding so far). Both skips are validated for now. This is the third straight day the semis "day low" broke after a dip entry signal.
+- Mean reversion (looser tier ≤−2%): AMD −5.0%, MU −3.9%, ORCL −4.0%, AVGO −3.4%, META −3.5%, NFLX −2.8%, ADBE −2.7%, CRM −2.8%, TSLA −2.6%, MSFT −2.2%, AMZN −2.0%, GOOGL −2.0%. The sectors are still making new lows. Same PDT block on every entry (3 day trades in 5 sessions). No entries.
+- Momentum: no standouts with a catalyst (AAPL +0.23%, rs +2.7: gate 2 FAIL).
+- Options: SPY −0.92% and QQQ −2.10%. QQQ is now past the −2% filter → SKIP QQQ put spreads today. SPY credit was ~15% of width last cycle; not re-quoted (the structure has failed all day at 0.20 delta).
+- Action: none. Entries 0 of 3.
